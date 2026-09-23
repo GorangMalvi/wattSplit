@@ -1,4 +1,5 @@
-function BalanceCard({ name, balance }) {
+// detail: optional extra line under the label (e.g. per-meter balances).
+function BalanceCard({ name, balance, detail }) {
   const isPositive = balance > 0;
   const isNegative = balance < 0;
   const colorClass = isPositive
@@ -19,6 +20,7 @@ function BalanceCard({ name, balance }) {
         })}
       </p>
       <p className="mt-1 text-xs opacity-80">{label}</p>
+      {detail && <p className="mt-1 text-xs opacity-80">{detail}</p>}
     </div>
   );
 }

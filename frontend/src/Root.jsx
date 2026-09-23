@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import App from './App';
-import { getHouseholds, setActiveHousehold } from './api';
+import { acceptInvite, getHouseholds, lookupInvite, setActiveHousehold } from './api';
 import AuthScreen from './components/AuthScreen';
 import ErrorAlert from './components/ErrorAlert';
 import HouseholdSetup from './components/HouseholdSetup';
@@ -25,8 +25,61 @@ function storeHousehold(id) {
   }
 }
 
+const INVITE_KEY = 'wattsplit.invite';
+
+// ?invite=CODE from an invite link. Kept in storage until it's used, because
+// signing in comes first; removed from the address bar straight away.
+function takeInviteCode() {
+  let fromUrl = null;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    fromUrl = params.get('invite');
+    if (fromUrl) {
+      params.delete('invite');
+      const query = params.toString();
+      window.history.replaceState(
+        null,
+        '',
+        window.location.pathname + (query ? `?${query}` : '') + window.location.hash
+      );
+      localStorage.setItem(INVITE_KEY, fromUrl);
+    }
+    return fromUrl || localStorage.getItem(INVITE_KEY);
+  } catch {
+    return fromUrl;
+  }
+}
+
+function clearInviteCode() {
+  try {
+    localStorage.removeItem(INVITE_KEY);
+  } catch {
+    // Nothing stored.
+  }
+}
+
 function CenteredMessage({ children }) {
   return <div className="flex min-h-screen items-center justify-center p-4">{children}</div>;
+}
+
+function Notice({ notice, onClose }) {
+  if (!notice) return null;
+  const tone =
+    notice.tone === 'success'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : 'border-rose-200 bg-rose-50 text-rose-800';
+  return (
+    <div className="px-4 pt-3 md:px-6 lg:px-8">
+      <div
+        className={`mx-auto flex max-w-7xl items-center justify-between gap-3 rounded-lg border px-4 py-2 text-sm ${tone}`}
+      >
+        <span>{notice.text}</span>
+        <button onClick={onClose} className="px-2 py-0 text-xs underline">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function Root() {
@@ -37,6 +90,26 @@ function Root() {
   const [addingHousehold, setAddingHousehold] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(null);
+  // Invite link: its code, who it's for (shown before sign-in), and the outcome.
+  const [inviteCode, setInviteCode] = useState(takeInviteCode);
+  const [invite, setInvite] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const dropInvite = () => {
+    clearInviteCode();
+    setInviteCode(null);
+    setInvite(null);
+  };
+
+  useEffect(() => {
+    if (!inviteCode) return;
+    lookupInvite(inviteCode)
+      .then(setInvite)
+      .catch((err) => {
+        dropInvite();
+        setNotice({ tone: 'error', text: err.message });
+      });
+  }, [inviteCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -51,14 +124,31 @@ function Root() {
     setHouseholds(null);
     setError(null);
     if (!userId) return;
-    getHouseholds()
-      .then((list) => {
-        setHouseholds(list);
-        const stored = readStoredHousehold();
-        setActiveId(list.some((h) => h.id === stored) ? stored : list[0]?.id ?? null);
-      })
-      .catch((err) => setError(err.message));
-  }, [userId]);
+    (async () => {
+      // Signed in with an invite pending: accept it first, then open that household.
+      if (inviteCode) {
+        try {
+          const joined = await acceptInvite(inviteCode);
+          storeHousehold(joined.id);
+          try {
+            localStorage.setItem('wattsplit.view', 'mine');
+          } catch {
+            // Storage unavailable: App opens on its default tab.
+          }
+          setNotice({ tone: 'success', text: `You've joined ${joined.name}. Welcome!` });
+          dropInvite();
+        } catch (err) {
+          setNotice({ tone: 'error', text: err.message });
+          // Signed in with a different email: keep the invite for the right account.
+          if (err.status !== 403) dropInvite();
+        }
+      }
+      const list = await getHouseholds();
+      setHouseholds(list);
+      const stored = readStoredHousehold();
+      setActiveId(list.some((h) => h.id === stored) ? stored : list[0]?.id ?? null);
+    })().catch((err) => setError(err.message));
+  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectHousehold = (id) => {
     storeHousehold(id);
@@ -94,7 +184,14 @@ function Root() {
   }
 
   if (session === undefined) return <LoadingSpinner />;
-  if (!session) return <AuthScreen />;
+  if (!session) {
+    return (
+      <>
+        <Notice notice={notice} onClose={() => setNotice(null)} />
+        <AuthScreen invite={invite} />
+      </>
+    );
+  }
 
   if (error) {
     return (
@@ -110,11 +207,14 @@ function Root() {
 
   if (!active || addingHousehold) {
     return (
-      <HouseholdSetup
-        onDone={handleHouseholdReady}
-        onCancel={active ? () => setAddingHousehold(false) : null}
-        onSignOut={signOut}
-      />
+      <>
+        <Notice notice={notice} onClose={() => setNotice(null)} />
+        <HouseholdSetup
+          onDone={handleHouseholdReady}
+          onCancel={active ? () => setAddingHousehold(false) : null}
+          onSignOut={signOut}
+        />
+      </>
     );
   }
 
@@ -160,6 +260,7 @@ function Root() {
           </div>
         </div>
       </div>
+      <Notice notice={notice} onClose={() => setNotice(null)} />
       <App key={active.id} />
     </>
   );

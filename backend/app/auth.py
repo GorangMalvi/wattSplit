@@ -12,7 +12,7 @@ import os
 from functools import lru_cache
 
 import jwt
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 
 
 ASYMMETRIC_ALGS = ["ES256", "RS256"]
@@ -52,12 +52,16 @@ def verify_token(token: str) -> dict:
     )
 
 
-def current_user_id(authorization: str | None = Header(None)) -> str:
-    """FastAPI dependency: the signed-in user's id (``sub`` claim)."""
+def current_claims(authorization: str | None = Header(None)) -> dict:
+    """FastAPI dependency: the signed-in user's verified token claims."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not signed in")
     try:
-        claims = verify_token(authorization[7:].strip())
+        return verify_token(authorization[7:].strip())
     except jwt.PyJWTError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid session: {exc}")
+
+
+def current_user_id(claims: dict = Depends(current_claims)) -> str:
+    """FastAPI dependency: the signed-in user's id (``sub`` claim)."""
     return claims["sub"]

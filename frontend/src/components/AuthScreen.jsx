@@ -4,9 +4,15 @@ import { supabase } from '../supabase';
 // Supabase allows one code per email every 60 seconds by default.
 const RESEND_SECONDS = 60;
 
-function AuthScreen() {
+// invite: from an invite link ({ household, roommate, email }), or null.
+function AuthScreen({ invite = null }) {
   const [step, setStep] = useState('email');
   const [email, setEmail] = useState('');
+
+  // The invite is looked up after the screen appears: fill in its email then.
+  useEffect(() => {
+    if (invite?.email) setEmail((current) => current || invite.email);
+  }, [invite]);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -76,6 +82,14 @@ function AuthScreen() {
             ? 'Sign in or create an account with a code sent to your email.'
             : `Enter the code we sent to ${email.trim()}.`}
         </p>
+
+        {invite && (
+          <div className="-mt-2 mb-5 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+            You're invited to join <span className="font-semibold">{invite.household}</span> as{' '}
+            <span className="font-semibold">{invite.roommate}</span>. Sign in with{' '}
+            <span className="font-medium">{invite.email}</span> to accept.
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           {step === 'email' ? (

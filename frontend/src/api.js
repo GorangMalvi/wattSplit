@@ -39,7 +39,9 @@ api.interceptors.response.use(
     const message = Array.isArray(detail)
       ? detail.map((d) => d.msg).join('; ')
       : detail || error.message || 'Something went wrong';
-    return Promise.reject(new Error(message));
+    const err = new Error(message);
+    err.status = error.response?.status;
+    return Promise.reject(err);
   }
 );
 
@@ -71,6 +73,48 @@ export const createRoommate = (payload) =>
 export const updateRoommate = (id, payload) =>
   api.put(`/roommates/${id}`, payload).then((res) => res.data);
 
+// Owner: invite someone by email to be this roommate. Returns the invite with
+// its link/code and whether the email went out (email_sent, email_error).
+export const inviteRoommate = (roommateId, email) =>
+  api.post(`/roommates/${roommateId}/invite`, { email }).then((res) => res.data);
+
+export const getInvites = () => api.get('/invites').then((res) => res.data);
+
+export const revokeInvite = (id) => api.delete(`/invites/${id}`);
+
+// No sign-in needed: who the invite is for (household, roommate, email).
+export const lookupInvite = (code) =>
+  api.get(`/invites/lookup/${encodeURIComponent(code)}`).then((res) => res.data);
+
+export const acceptInvite = (code) =>
+  api.post('/invites/accept', { code }).then((res) => res.data);
+
+// Owner only: detach the login linked to a roommate
+export const unlinkRoommate = (id) => api.delete(`/roommates/${id}/link`);
+
+// The signed-in user: role, linked roommate, personal dashboard
+export const getMe = () => api.get('/me').then((res) => res.data);
+
+// payload: { roommate_id } to pick an existing roommate, or { name } to add yourself
+export const linkMyRoommate = (payload) =>
+  api.post('/me/roommate', payload).then((res) => res.data);
+
+export const unlinkMyRoommate = () => api.delete('/me/roommate');
+
+export const getMyDashboard = () => api.get('/me/dashboard').then((res) => res.data);
+
+// Owner: the meter provider's Monthly Consumption Report (.xlsx), sent as the
+// raw body. dryRun: only preview what would be imported.
+export const uploadMeterReport = (file, { dryRun }) =>
+  api
+    .post('/meter-report', file, {
+      params: { dry_run: dryRun },
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+    })
+    .then((res) => res.data);
+
 // Calculated split + balances for a month
 export const getCalculate = (month) =>
   api.get(`/calculate/${month}`).then((res) => res.data);
@@ -79,10 +123,17 @@ export const getCalculate = (month) =>
 export const getHistory = () => api.get('/history').then((res) => res.data);
 
 // Readings
-export const updateReading = (month, roommateId, currentReading) =>
+// fields: { current_reading, start_reading } (either or both; null clears).
+// A plain number means the month-end reading.
+export const updateReading = (month, roommateId, fields) =>
   api
-    .put(`/readings/${month}/${roommateId}`, { current_reading: currentReading })
+    .put(
+      `/readings/${month}/${roommateId}`,
+      typeof fields === 'number' ? { current_reading: fields } : fields
+    )
     .then((res) => res.data);
+
+export const deleteReading = (month, roommateId) => api.delete(`/readings/${month}/${roommateId}`);
 
 // Recharges
 export const getRecharges = (month) =>
