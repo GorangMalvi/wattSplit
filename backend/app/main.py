@@ -6,6 +6,7 @@ and an ``X-Household-Id`` header naming a household the user belongs to.
 """
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from typing import Annotated, List, Optional
 from uuid import UUID
@@ -42,10 +43,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Electricity Bill Splitter", lifespan=lifespan)
 
-# CORS for the Vite dev server.
+# CORS for the Vite dev server and the Android app (Capacitor serves it from
+# https://localhost). Extra origins: comma-separated CORS_ORIGINS.
+CORS_ORIGINS = ["http://localhost:5173", "https://localhost"] + [
+    o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

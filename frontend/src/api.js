@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core';
 import axios from 'axios';
 import { supabase } from './supabase';
 
@@ -96,13 +97,40 @@ export const updateRecharge = (id, payload) =>
 export const deleteRecharge = (id) =>
   api.delete(`/recharges/${id}`).then((res) => res.data);
 
+const blobToBase64 = (blob) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
+// Android: WebViews can't download, so save to the cache and open the share sheet.
+const shareOnDevice = async (blob, filename) => {
+  const [{ Filesystem, Directory }, { Share }] = await Promise.all([
+    import('@capacitor/filesystem'),
+    import('@capacitor/share'),
+  ]);
+  const { uri } = await Filesystem.writeFile({
+    path: filename,
+    data: await blobToBase64(blob),
+    directory: Directory.Cache,
+  });
+  await Share.share({ title: filename, files: [uri] });
+};
+
 // Export: fetched with auth headers, then saved via a temporary link.
 export const downloadExport = async (month) => {
   const res = await api.get(`/export/${month}`, { responseType: 'blob' });
+  const filename = `${month}_report.xlsx`;
+  if (Capacitor.isNativePlatform()) {
+    await shareOnDevice(res.data, filename);
+    return;
+  }
   const url = URL.createObjectURL(res.data);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${month}_report.xlsx`;
+  link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };

@@ -36,3 +36,5 @@ coverage/
 Dockerfile
 docker-compose.yml
 .dockerignore
+# Android (Capacitor) project, not part of the web image
+android/

@@ -61,6 +61,26 @@ npm run dev
 ```
 Open `http://localhost:5173`.
 
+## Android app (APK)
+The React app is wrapped with [Capacitor](https://capacitorjs.com/) (`frontend/android/`). The APK can't use the local `/api` proxy, so it calls a **deployed** backend.
+
+### 1. Deploy the backend (Render, free)
+1. On [render.com](https://render.com), **New → Blueprint**, connect this GitHub repo. It reads `render.yaml`.
+2. Enter the secrets it asks for: `SUPABASE_URL`, `DATABASE_URL` (Session pooler), `MAILTRAP_API_TOKEN`, `MAIL_FROM_EMAIL`. Leave `SUPABASE_JWT_SECRET` empty for JWT signing keys.
+3. When it's live, check `https://<your-service>.onrender.com/api/health` returns `{"status":"ok"}`.
+
+The free plan sleeps after 15 minutes idle; the first request after that takes up to a minute.
+
+### 2. Build the APK
+Needs JDK 21 and the Android SDK (platform 35) with `JAVA_HOME` and `ANDROID_HOME` set.
+```bash
+# .env: MOBILE_API_URL=https://<your-service>.onrender.com/api
+cd frontend
+npm install
+npm run apk
+```
+The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Copy it to the phone and open it (allow "install unknown apps" for the file manager / browser you open it with).
+
 ## Features
 - Passwordless sign-in with an emailed one-time code; households with invite codes
 - Manage roommates (join/leave months, active flag)
