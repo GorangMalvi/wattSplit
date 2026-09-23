@@ -4,6 +4,10 @@
 !.env.example
 *.pem
 *.key
+# Android signing keys (kept in ~/.wattsplit, never in the repo)
+*.jks
+*.keystore
+keystore.properties
 
 # Local tooling / assistant config
 .claude/
