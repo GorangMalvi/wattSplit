@@ -1,7 +1,10 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-pydantic==2.9.2
+pydantic==2.13.5
 pandas==2.3.1
 openpyxl==3.1.5
-python-dateutil==2.9.0
-python-multipart==0.0.12
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+PyJWT[crypto]==2.14.0
+python-dotenv==1.2.3
+mailtrap==2.10.0

@@ -1,55 +1,89 @@
-# Electricity Bill Splitter
+# wattSplit
 
-A simple local web dashboard to manage and split the electricity bill among flatmates.
+Split a shared flat's electricity bill fairly from sub-meter readings, common units and DG charges. Track recharges and running balances, and export monthly Excel reports.
 
 ## Stack
-- **Backend**: Python 3.11+, FastAPI, OpenPyXL, Pandas
-- **Frontend**: React 18, Vite, Tailwind CSS
-- **Storage**: Excel workbook (`backend/data/bills.xlsx`) — Supabase later
+- **Backend**: Python 3.11+, FastAPI, Pandas, OpenPyXL, psycopg
+- **Frontend**: React, Vite, Tailwind CSS, supabase-js
+- **Auth & storage**: Supabase (email one-time-code login, Postgres)
 
-## Quick Start
+## How it works
+- Users sign in with a one-time code emailed by Supabase Auth (no passwords; the account is created on first sign-in). Each user creates a **household** (a flat) or joins one with its 8-character invite code; all roommates, months, readings and recharges belong to a household.
+- The frontend sends the Supabase access token and the chosen household (`X-Household-Id`) with every API call. FastAPI verifies the token and checks membership before touching any data.
+- Tables have Row Level Security enabled, so the public anon key cannot read another household's data through Supabase's REST API.
 
-### 1. Start the backend
-```bash
-cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-Backend runs at `http://localhost:8000`.
+## Supabase setup (once)
+1. Copy `.env.example` to `.env` and fill in, from your Supabase project:
+   - `SUPABASE_URL` and `SUPABASE_ANON_KEY`: **Project Settings → API**
+   - `DATABASE_URL`: **Connect → Session pooler** connection string, with your database password filled in
+   - `SUPABASE_JWT_SECRET`: only if the project still uses the legacy JWT secret; leave it empty for JWT signing keys
+2. Create the tables (safe to re-run after schema changes):
+   ```bash
+   cd backend
+   pip install -r requirements.txt
+   python -m app.init_schema
+   ```
+   Or paste `backend/app/schema.sql` into the Supabase SQL editor.
+3. Send sign-in codes through Mailtrap. Supabase's built-in email can't use custom templates on the free plan, so Mailtrap is set as the project's SMTP provider:
+   - In Mailtrap, add and verify a sending domain (or use the demo domain for testing), then copy its API token.
+   - Fill `MAILTRAP_API_TOKEN`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` and `SUPABASE_ACCESS_TOKEN` in `.env`.
+   - Run:
+     ```bash
+     cd backend
+     python -m app.mailer you@example.com   # test email via the Mailtrap SDK
+     python -m app.setup_auth_email         # Mailtrap SMTP + code templates in Supabase
+     ```
+   - Remove `SUPABASE_ACCESS_TOKEN` from `.env` and revoke it afterwards.
+   - Sent emails show up at https://mailtrap.io/sending/email_logs
 
-### 2. Start the frontend
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Frontend runs at `http://localhost:5173`.
+`.env` is git-ignored because `DATABASE_URL` contains your database password. Never commit it.
 
 ## Run with Docker
 ```bash
 docker compose up -d --build
 ```
 Open **http://wattsplit.localhost** (also available at `http://localhost:5173`).
-The URL/port are set in `.env` (`LOCAL_HOST_URL`, `LOCAL_HOST_PORT`).
+The URL and port are set in `.env` (`LOCAL_HOST_URL`, `LOCAL_HOST_PORT`).
+
+## Run locally without Docker
+```bash
+# Backend (reads the repo-root .env)
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+
+# Frontend, in another terminal (proxies /api to the backend)
+cd frontend
+npm install
+npm run dev
+```
+Open `http://localhost:5173`.
 
 ## Features
-- Add/edit monthly meter readings
-- Record recharges/payments by person
-- Auto-calculate bill split including common units and DG charges
+- Passwordless sign-in with an emailed one-time code; households with invite codes
+- Manage roommates (join/leave months, active flag)
+- Create months; the main meter start reading carries over from the previous month
+- Enter per-room meter readings and recharges/payments
+- Auto-calculate the split, including common units and DG charges
 - Running balances
-- Download monthly Excel report
+- Download a monthly Excel report
 
 ## Project Structure
 ```
 Electricity_bill_dist/
-├── backend/        # FastAPI + Excel storage
-├── frontend/       # React + Tailwind dashboard
-├── SPEC.md         # Full specification
-└── README.md       # This file
+├── backend/
+│   └── app/
+│       ├── main.py         # API routes
+│       ├── auth.py         # Supabase token verification
+│       ├── db.py           # Postgres access, household-scoped
+│       ├── calc.py         # Bill split math
+│       ├── export.py       # Excel report
+│       ├── schema.sql      # Tables + RLS policies
+│       └── init_schema.py  # Applies schema.sql
+├── frontend/               # React + Tailwind dashboard
+├── .env.example            # Settings template
+├── SPEC.md                 # Business rules and formulas
+└── README.md
 ```
-
-## Notes
-- Historical data was imported from `C:\Users\goran\Downloads\electricity golf 1.xlsx`.
-- Single-user mode for now; multi-user login and Supabase integration planned later.

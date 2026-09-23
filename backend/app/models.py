@@ -5,8 +5,27 @@ from __future__ import annotations
 
 from datetime import date
 from typing import List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Households
+# ---------------------------------------------------------------------------
+class HouseholdCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80, description="Flat / household name")
+
+
+class HouseholdJoin(BaseModel):
+    invite_code: str = Field(..., min_length=4, max_length=16)
+
+
+class HouseholdOut(BaseModel):
+    id: UUID
+    name: str
+    invite_code: str
+    role: str
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +43,7 @@ class RoommateCreate(RoommateBase):
 
 
 class RoommateOut(RoommateBase):
-    id: int = Field(..., description="Row id in the roommates sheet")
+    id: int = Field(..., description="Roommate id")
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +60,14 @@ class MonthBase(BaseModel):
 
 class MonthCreate(MonthBase):
     pass
+
+
+class MonthUpdate(BaseModel):
+    main_start_reading: Optional[float] = None
+    main_end_reading: Optional[float] = None
+    monthly_bill: Optional[float] = Field(None, ge=0)
+    dg_bill: Optional[float] = Field(None, ge=0)
+    notes: Optional[str] = None
 
 
 class MonthOut(MonthBase):

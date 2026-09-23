@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from . import db
+from .db import HouseholdData
 
 
 def _month_end_date(month: str) -> str:
@@ -43,13 +43,13 @@ def _roommate_is_active(roommate: str, month: str, roommates_df: pd.DataFrame) -
     return True
 
 
-def calculate_month(month: str) -> Dict[str, Any]:
+def calculate_month(month: str, data: HouseholdData) -> Dict[str, Any]:
     """
     Calculate the full split for ``month``.
 
     Returns a dict matching ``MonthCalculation`` in ``models.py``.
     """
-    month_row = db.get_month(month)
+    month_row = data.get_month(month)
     if month_row is None:
         raise ValueError(f"Month {month} not found")
 
@@ -60,16 +60,16 @@ def calculate_month(month: str) -> Dict[str, Any]:
 
     main_units = main_end - main_start
 
-    readings_df = db.get_readings(month)
+    readings_df = data.get_readings(month)
     if readings_df.empty:
         raise ValueError(f"No readings found for {month}")
 
-    roommates_df = db.get_roommates()
+    roommates_df = data.get_roommates()
 
-    prev_month = db.get_previous_month(month)
+    prev_month = data.get_previous_month(month)
     prev_readings: Dict[str, float] = {}
     if prev_month:
-        prev_df = db.get_readings(prev_month)
+        prev_df = data.get_readings(prev_month)
         for _, r in prev_df.iterrows():
             if pd.notna(r["current_reading"]):
                 prev_readings[str(r["roommate"])] = float(r["current_reading"])
@@ -116,7 +116,7 @@ def calculate_month(month: str) -> Dict[str, Any]:
     dg_share = dg_bill / active_count
 
     # Recharges for this month only.
-    recharges_df = db.get_recharges()
+    recharges_df = data.get_recharges()
     month_start = f"{month}-01"
     month_end = _month_end_date(month)
     month_recharges: Dict[str, float] = {}
@@ -143,27 +143,27 @@ def calculate_month(month: str) -> Dict[str, Any]:
         })
 
     # Running (cumulative) balances up to and including this month.
-    all_months = sorted(db.get_months()["month"].dropna().astype(str).tolist())
+    all_months = sorted(data.get_months()["month"].dropna().astype(str).tolist())
     running: Dict[str, Dict[str, float]] = {}
     for m in all_months:
         if m > month:
             break
-        mrow = db.get_month(m)
+        mrow = data.get_month(m)
         if mrow is None:
             continue
         m_monthly = float(mrow["monthly_bill"]) if pd.notna(mrow["monthly_bill"]) else 0.0
         m_dg = float(mrow["dg_bill"]) if pd.notna(mrow["dg_bill"]) else 0.0
-        m_readings = db.get_readings(m)
+        m_readings = data.get_readings(m)
         m_roommates = set(m_readings["roommate"].dropna().astype(str).tolist())
         m_count = len(m_roommates)
         if m_count == 0:
             continue
         m_end = _month_end_date(m)
         for rname in m_roommates:
-            cur = db.get_reading(m, rname)
+            cur = data.get_reading(m, rname)
             if cur is None:
                 continue
-            prev = db.get_reading(db.get_previous_month(m) or "", rname) if db.get_previous_month(m) else None
+            prev = data.get_reading(data.get_previous_month(m) or "", rname) if data.get_previous_month(m) else None
             sub = cur if prev is None else cur - prev
             # Use the monthly bill/dg from that month; approximate main units
             # from the stored main readings.
@@ -215,7 +215,7 @@ def calculate_month(month: str) -> Dict[str, Any]:
 
     frontend_roommates = []
     for row in split_rows:
-        rid = db.get_roommate_id_by_name(row["roommate"])
+        rid = data.get_roommate_id_by_name(row["roommate"])
         if rid is None:
             # Should not happen for active roommates, but guard anyway.
             continue
@@ -236,7 +236,7 @@ def calculate_month(month: str) -> Dict[str, Any]:
 
     frontend_running = []
     for b in running_balances:
-        rid = db.get_roommate_id_by_name(b["roommate"])
+        rid = data.get_roommate_id_by_name(b["roommate"])
         if rid is None:
             # Skip non-roommate entries such as "DG".
             continue
