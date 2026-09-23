@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Node / build
+node_modules/
+frontend/dist/
+
+# Personal data (DB, imported sheets, generated reports)
+backend/data/*
+!backend/data/.gitkeep
+backend/exports/*
+!backend/exports/.gitkeep
+*.xlsx
+*.db
+*.db-journal
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

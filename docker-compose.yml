@@ -1,0 +1,54 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: electricity-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist SQLite database and exports
+      - ./backend/data:/app/data
+      - ./backend/exports:/app/exports
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - electricity-net
+    restart: unless-stopped
+    healthcheck:
+      # python:3.11-slim has no curl, so probe with Python itself
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/roommates', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Route API calls through nginx's /api proxy (same origin, no CORS)
+        VITE_API_URL: /api
+    container_name: electricity-frontend
+    ports:
+      # LOCAL_HOST_URL from .env (http://wattsplit.localhost)
+      - "${LOCAL_HOST_PORT:-80}:80"
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - electricity-net
+    restart: unless-stopped
+    healthcheck:
+      # nginx:alpine ships busybox wget
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+networks:
+  electricity-net:
+    driver: bridge
