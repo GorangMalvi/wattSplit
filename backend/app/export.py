@@ -3,7 +3,7 @@ Generate a human-readable Excel report for a single month.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from io import BytesIO
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -11,10 +11,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from . import calc, db
+from . import calc
+from .db import HouseholdData
 
-
-EXPORTS_DIR = Path(__file__).resolve().parent.parent / "exports"
 
 
 def _format_header(cell):
@@ -27,13 +26,10 @@ def _format_money(cell):
     cell.number_format = "#,##0.00"
 
 
-def generate_month_report(month: str) -> Path:
-    """Generate ``exports/{month}_report.xlsx`` and return its path."""
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = EXPORTS_DIR / f"{month}_report.xlsx"
-
-    result = calc.calculate_month(month)
-    month_row = db.get_month(month)
+def generate_month_report(month: str, data: HouseholdData) -> bytes:
+    """Build the ``{month}_report.xlsx`` workbook and return its bytes."""
+    result = calc.calculate_month(month, data)
+    month_row = data.get_month(month)
     notes = str(month_row["notes"]) if month_row is not None and pd.notna(month_row.get("notes")) else ""
 
     wb = Workbook()
@@ -143,7 +139,7 @@ def generate_month_report(month: str) -> Path:
         cell = ws.cell(row, col, h)
         _format_header(cell)
     row += 1
-    rec_df = db.get_recharges()
+    rec_df = data.get_recharges()
     month_start = f"{month}-01"
     month_end = calc._month_end_date(month)
     recs = rec_df[(rec_df["date"] >= month_start) & (rec_df["date"] <= month_end)]
@@ -162,5 +158,6 @@ def generate_month_report(month: str) -> Path:
     for col_idx in range(1, len(headers) + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 18
 
-    wb.save(out_path)
-    return out_path
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

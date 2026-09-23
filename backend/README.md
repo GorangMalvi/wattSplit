@@ -1,107 +1,65 @@
-# Electricity Bill Splitter — Backend
+# wattSplit — Backend
 
-FastAPI + Excel backend for the flat electricity bill dashboard.
+FastAPI backend for wattSplit, using Supabase for auth and Postgres storage.
+See the root `README.md` for Supabase setup and running with Docker.
 
 ## Stack
 
 - Python 3.11+
 - FastAPI + Uvicorn
-- Pandas + OpenPyXL
+- psycopg 3 (connection pool) against Supabase Postgres
+- PyJWT to verify Supabase access tokens
+- Pandas + OpenPyXL for the split calculation and Excel report
 
 ## Project layout
 
 ```
 backend/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py       # FastAPI app and endpoints
-│   ├── db.py         # Excel read/write helpers
-│   ├── models.py     # Pydantic models
-│   ├── calc.py       # Bill-splitting calculation
-│   ├── export.py     # Excel report generator
-│   └── migrate.py    # Historical data importer
-├── data/
-│   └── bills.xlsx    # Structured database
-├── exports/
-│   └── {month}_report.xlsx
+│   ├── __init__.py     # Loads the repo-root .env for local runs
+│   ├── main.py         # FastAPI app and endpoints
+│   ├── auth.py         # Supabase JWT verification
+│   ├── db.py           # Household-scoped Postgres queries + HouseholdData snapshot
+│   ├── models.py       # Pydantic models
+│   ├── calc.py         # Bill-splitting calculation
+│   ├── export.py       # Excel report generator
+│   ├── schema.sql      # Tables, indexes, RLS policies
+│   └── init_schema.py  # python -m app.init_schema
 ├── requirements.txt
 └── README.md
 ```
 
 ## Setup
 
-1. Open a terminal in `backend/`.
-2. (Optional) create a virtual environment:
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate   # Windows
-   # source venv/bin/activate  # macOS/Linux
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Run the server
-
 ```bash
+python -m venv venv
+venv\Scripts\activate   # Windows
+pip install -r requirements.txt
+python -m app.init_schema   # creates/updates tables in Supabase
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The API is available at `http://127.0.0.1:8000`.
+Settings come from the repo-root `.env` (see `.env.example`): `SUPABASE_URL`,
+`DATABASE_URL`, and `SUPABASE_JWT_SECRET` for legacy-secret projects only.
+
 Interactive docs: `http://127.0.0.1:8000/docs`.
 
-CORS is enabled for the Vite dev server at `http://localhost:5173`.
+## Auth
 
-## Migrate historical data
-
-The historical workbook lives at `C:\Users\goran\Downloads\electricity golf 1.xlsx`.
-To import it into `backend/data/bills.xlsx`:
-
-```bash
-python -m app.migrate
-```
-
-This overwrites `bills.xlsx`. The migration creates a base month before the
-first billed month so that sub-meter consumption can be calculated from the
-imported readings.
+Every route except `/api/health` needs `Authorization: Bearer <Supabase access token>`.
+Data routes also need `X-Household-Id: <uuid>` for a household the user belongs to;
+other households return `403`.
 
 ## API endpoints
 
-- `GET /api/roommates`
-- `POST /api/roommates`
-- `PUT /api/roommates/{id}`
-- `GET /api/months`
-- `GET /api/months/{month}`
-- `POST /api/months`
-- `PUT /api/months/{month}`
-- `POST /api/readings`
-- `POST /api/recharges`
+- `GET /api/health`
+- `GET /api/households`, `POST /api/households`, `POST /api/households/join`
+- `GET /api/roommates`, `POST /api/roommates`, `PUT /api/roommates/{id}`
+- `GET /api/months`, `GET /api/months/{month}`, `POST /api/months`, `PUT /api/months/{month}`
+- `PUT /api/readings/{month}/{roommate_id}`
+- `GET /api/recharges?month=`, `POST /api/recharges`, `PUT /api/recharges/{id}`, `DELETE /api/recharges/{id}`
 - `GET /api/calculate/{month}`
 - `GET /api/history`
-- `GET /api/export/{month}`
+- `GET /api/export/{month}` (downloads `{month}_report.xlsx`)
 
 `{month}` is always `YYYY-MM` (e.g. `2025-09`).
-
-## Report export
-
-`GET /api/export/{month}` generates
-`backend/exports/{month}_report.xlsx` and returns the file path.
-
-## Migration notes
-
-The historical workbook is messy. The importer (`app/migrate.py`) makes these
-assumptions:
-
-- Saksham → Gorang and Vipul → Akash were treated as the same people over time
-  (matching the note in the spec).
-- Ujjwal is kept as a separate early roommate because the Apr 2025 sheet has
-  both Ujjwal and Saksham as distinct rooms.
-- The right-hand recharge tables mix carry-forward balances, net-recharge
-  totals and actual payments. To avoid double-counting balances as payments,
-  only explicit free-form payment entries (`date + amount + name`) and the
-  Sheet2 log were imported.
-- A synthetic base month (`2025-03`) is created before the first billed month
-  so that sub-meter consumption can be calculated from the imported readings.
-- Where only a start reading was present for a month, the end reading was
-  computed from the per-room sub-units row.

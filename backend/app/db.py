@@ -1,358 +1,385 @@
 """
-SQLite-backed database helpers.
+Supabase Postgres data access.
 
-The database file is ``data/bills.db``. All functions return pandas DataFrames
-or Series so the rest of the codebase (calc, export, API) remains unchanged.
+Every function is scoped to a household id. The ``list_*`` helpers return
+plain dicts for the API; ``HouseholdData`` loads one household into pandas
+DataFrames so calc/export run in memory instead of making hundreds of round
+trips to the remote database.
 """
 from __future__ import annotations
 
-import sqlite3
+import os
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 import pandas as pd
+from psycopg import errors
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+
+SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
+INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+_pool: Optional[ConnectionPool] = None
 
 
 # ---------------------------------------------------------------------------
-# Paths
+# Connection pool
 # ---------------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent
-DATA_DIR = APP_DIR.parent / "data"
-EXPORTS_DIR = APP_DIR.parent / "exports"
-DB_PATH = DATA_DIR / "bills.db"
-# Kept for the optional Excel migration script.
-EXCEL_PATH = DATA_DIR / "bills.xlsx"
+def database_url() -> str:
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
+        raise RuntimeError("DATABASE_URL is not set")
+    return url
 
 
-# ---------------------------------------------------------------------------
-# Low-level SQLite helpers
-# ---------------------------------------------------------------------------
-def ensure_directories() -> None:
-    """Create data and exports directories if missing."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+def open_pool() -> None:
+    """Open the pool and fail fast if the database is unreachable."""
+    global _pool
+    _pool = ConnectionPool(
+        database_url(),
+        min_size=1,
+        max_size=5,
+        # prepare_threshold=None keeps it compatible with Supabase's poolers.
+        kwargs={"prepare_threshold": None, "row_factory": dict_row},
+        check=ConnectionPool.check_connection,
+        open=True,
+    )
+    _pool.wait(timeout=30)
 
 
-def get_connection() -> sqlite3.Connection:
-    """Return a SQLite connection with row factory enabled."""
-    ensure_directories()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def close_pool() -> None:
+    if _pool is not None:
+        _pool.close()
 
 
-def init_db(force: bool = False) -> Path:
-    """
-    Create the SQLite database and tables if they do not exist.
-    Returns the path to the database file.
-    """
-    ensure_directories()
-
-    if DB_PATH.exists() and not force:
-        return DB_PATH
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.executescript("""
-        CREATE TABLE IF NOT EXISTS roommates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            join_date TEXT DEFAULT '',
-            leave_date TEXT DEFAULT '',
-            is_active INTEGER DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS months (
-            month TEXT PRIMARY KEY,
-            main_start_reading REAL DEFAULT 0,
-            main_end_reading REAL DEFAULT 0,
-            monthly_bill REAL DEFAULT 0,
-            dg_bill REAL DEFAULT 0,
-            notes TEXT DEFAULT ''
-        );
-
-        CREATE TABLE IF NOT EXISTS readings (
-            month TEXT NOT NULL,
-            roommate TEXT NOT NULL,
-            current_reading REAL NOT NULL,
-            PRIMARY KEY (month, roommate)
-        );
-
-        CREATE TABLE IF NOT EXISTS recharges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            roommate TEXT NOT NULL,
-            amount REAL NOT NULL,
-            notes TEXT DEFAULT ''
-        );
-    """)
-
-    conn.commit()
-    conn.close()
-    return DB_PATH
+def _fetch(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    with _pool.connection() as conn:
+        return conn.execute(query, params).fetchall()
 
 
-def _df_from_query(query: str, params: tuple = ()) -> pd.DataFrame:
-    """Run a query and return a DataFrame."""
-    conn = get_connection()
-    try:
-        df = pd.read_sql_query(query, conn, params=params)
-    finally:
-        conn.close()
-    return df
+def _fetch_one(query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+    with _pool.connection() as conn:
+        return conn.execute(query, params).fetchone()
 
 
 def _execute(query: str, params: tuple = ()) -> int:
-    """Run a write query and return the last row id."""
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        conn.commit()
-        return cursor.lastrowid
-    finally:
-        conn.close()
+    """Run a write query and return the number of affected rows."""
+    with _pool.connection() as conn:
+        return conn.execute(query, params).rowcount
+
+
+def _set_clause(updates: Dict[str, Any]) -> str:
+    # Keys are always filtered through an allow-list before reaching here.
+    return ", ".join(f"{k} = %s" for k in updates)
+
+
+# ---------------------------------------------------------------------------
+# Households
+# ---------------------------------------------------------------------------
+def _new_invite_code() -> str:
+    return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(8))
+
+
+def list_households(user_id: str) -> List[Dict[str, Any]]:
+    return _fetch(
+        """
+        SELECT h.id, h.name, h.invite_code, m.role
+        FROM household_members m JOIN households h ON h.id = m.household_id
+        WHERE m.user_id = %s
+        ORDER BY h.created_at
+        """,
+        (user_id,),
+    )
+
+
+def create_household(user_id: str, name: str) -> Dict[str, Any]:
+    with _pool.connection() as conn:
+        row = None
+        while row is None:
+            row = conn.execute(
+                """
+                INSERT INTO households (name, invite_code, created_by) VALUES (%s, %s, %s)
+                ON CONFLICT (invite_code) DO NOTHING
+                RETURNING id, name, invite_code
+                """,
+                (name.strip(), _new_invite_code(), user_id),
+            ).fetchone()
+        conn.execute(
+            "INSERT INTO household_members (household_id, user_id, role) VALUES (%s, %s, 'owner')",
+            (row["id"], user_id),
+        )
+    return {**row, "role": "owner"}
+
+
+def join_household(user_id: str, invite_code: str) -> Optional[Dict[str, Any]]:
+    """Add the user to the household with this code; None if the code is unknown."""
+    with _pool.connection() as conn:
+        household = conn.execute(
+            "SELECT id, name, invite_code FROM households WHERE invite_code = %s",
+            (invite_code.strip().upper(),),
+        ).fetchone()
+        if household is None:
+            return None
+        conn.execute(
+            """
+            INSERT INTO household_members (household_id, user_id) VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (household["id"], user_id),
+        )
+        role = conn.execute(
+            "SELECT role FROM household_members WHERE household_id = %s AND user_id = %s",
+            (household["id"], user_id),
+        ).fetchone()["role"]
+    return {**household, "role": role}
+
+
+def is_member(user_id: str, household_id: UUID) -> bool:
+    return _fetch_one(
+        "SELECT 1 FROM household_members WHERE household_id = %s AND user_id = %s",
+        (household_id, user_id),
+    ) is not None
 
 
 # ---------------------------------------------------------------------------
 # Roommates
 # ---------------------------------------------------------------------------
-def get_roommates() -> pd.DataFrame:
-    df = _df_from_query("SELECT id, name, join_date, leave_date, is_active FROM roommates ORDER BY id")
-    if not df.empty:
-        df["is_active"] = df["is_active"].astype(bool)
-    return df
+ROOMMATE_COLS = ["id", "name", "join_date", "leave_date", "is_active"]
+_ROOMMATE_SELECT = f"SELECT {', '.join(ROOMMATE_COLS)} FROM roommates"
 
 
-def add_roommate(name: str, join_date: Optional[str] = None,
-                 leave_date: Optional[str] = None, is_active: bool = True) -> int:
-    rid = _execute(
-        "INSERT INTO roommates (name, join_date, leave_date, is_active) VALUES (?, ?, ?, ?)",
-        (name, join_date or "", leave_date or "", 1 if is_active else 0),
-    )
-    return rid
+def list_roommates(hid: UUID) -> List[Dict[str, Any]]:
+    return _fetch(f"{_ROOMMATE_SELECT} WHERE household_id = %s ORDER BY id", (hid,))
 
 
-def update_roommate(rid: int, **kwargs) -> bool:
+def get_roommate(hid: UUID, rid: int) -> Optional[Dict[str, Any]]:
+    return _fetch_one(f"{_ROOMMATE_SELECT} WHERE household_id = %s AND id = %s", (hid, rid))
+
+
+def add_roommate(hid: UUID, name: str, join_date: str = "", leave_date: str = "",
+                 is_active: bool = True) -> Dict[str, Any]:
+    try:
+        return _fetch_one(
+            f"""
+            INSERT INTO roommates (household_id, name, join_date, leave_date, is_active)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING {', '.join(ROOMMATE_COLS)}
+            """,
+            (hid, name.strip(), join_date or "", leave_date or "", is_active),
+        )
+    except errors.UniqueViolation:
+        raise ValueError(f"A roommate named {name.strip()!r} already exists")
+
+
+def update_roommate(hid: UUID, rid: int, **kwargs) -> Optional[Dict[str, Any]]:
     allowed = {"name", "join_date", "leave_date", "is_active"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
-        return False
-    if "is_active" in updates:
-        updates["is_active"] = 1 if updates["is_active"] else 0
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    params = tuple(updates.values()) + (rid,)
-    conn = get_connection()
+        return get_roommate(hid, rid)
     try:
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE roommates SET {set_clause} WHERE id = ?", params)
-        conn.commit()
-        return cursor.rowcount > 0
-    finally:
-        conn.close()
-
-
-def get_roommate_names() -> List[str]:
-    df = get_roommates()
-    return df["name"].dropna().astype(str).tolist()
-
-
-def get_roommate_id_by_name(name: str) -> Optional[int]:
-    df = _df_from_query("SELECT id FROM roommates WHERE name = ?", (name,))
-    if df.empty:
-        return None
-    return int(df.iloc[0]["id"])
-
-
-def get_roommate_name_by_id(rid: int) -> Optional[str]:
-    df = _df_from_query("SELECT name FROM roommates WHERE id = ?", (rid,))
-    if df.empty:
-        return None
-    return str(df.iloc[0]["name"])
+        return _fetch_one(
+            f"""
+            UPDATE roommates SET {_set_clause(updates)}
+            WHERE household_id = %s AND id = %s
+            RETURNING {', '.join(ROOMMATE_COLS)}
+            """,
+            (*updates.values(), hid, rid),
+        )
+    except errors.UniqueViolation:
+        raise ValueError(f"A roommate named {updates.get('name')!r} already exists")
 
 
 # ---------------------------------------------------------------------------
 # Months
 # ---------------------------------------------------------------------------
-def get_months() -> pd.DataFrame:
-    return _df_from_query(
-        "SELECT month, main_start_reading, main_end_reading, monthly_bill, dg_bill, notes FROM months ORDER BY month"
-    )
+MONTH_COLS = ["month", "main_start_reading", "main_end_reading", "monthly_bill", "dg_bill", "notes"]
+_MONTH_SELECT = f"SELECT {', '.join(MONTH_COLS)} FROM months"
 
 
-def get_month(month: str) -> Optional[pd.Series]:
-    df = _df_from_query(
-        "SELECT month, main_start_reading, main_end_reading, monthly_bill, dg_bill, notes FROM months WHERE month = ?",
-        (month,),
-    )
-    if df.empty:
-        return None
-    return df.iloc[0]
+def list_months(hid: UUID) -> List[Dict[str, Any]]:
+    return _fetch(f"{_MONTH_SELECT} WHERE household_id = %s ORDER BY month", (hid,))
 
 
-def add_month(month: str, monthly_bill: float, dg_bill: float = 0.0,
+def get_month(hid: UUID, month: str) -> Optional[Dict[str, Any]]:
+    return _fetch_one(f"{_MONTH_SELECT} WHERE household_id = %s AND month = %s", (hid, month))
+
+
+def add_month(hid: UUID, month: str, monthly_bill: float, dg_bill: float = 0.0,
               main_start_reading: Optional[float] = None,
               main_end_reading: Optional[float] = None,
-              notes: Optional[str] = None) -> None:
-    if get_month(month) is not None:
-        raise ValueError(f"Month {month} already exists")
-
-    # Auto-carry main start reading from previous month if not supplied.
+              notes: Optional[str] = None) -> Dict[str, Any]:
+    # Auto-carry main start reading from the previous month if not supplied.
     if main_start_reading is None:
-        prev = get_previous_month(month)
-        if prev is not None:
-            prev_row = get_month(prev)
-            if prev_row is not None:
-                main_start_reading = float(prev_row["main_end_reading"]) if pd.notna(prev_row["main_end_reading"]) else 0.0
-        if main_start_reading is None:
-            main_start_reading = 0.0
+        prev = _fetch_one(
+            """
+            SELECT main_end_reading FROM months
+            WHERE household_id = %s AND month < %s ORDER BY month DESC LIMIT 1
+            """,
+            (hid, month),
+        )
+        main_start_reading = prev["main_end_reading"] if prev else 0.0
 
     if main_end_reading is None:
         main_end_reading = main_start_reading
 
-    _execute(
-        """
-        INSERT INTO months (month, main_start_reading, main_end_reading, monthly_bill, dg_bill, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (month, float(main_start_reading), float(main_end_reading), float(monthly_bill), float(dg_bill), notes or ""),
-    )
+    try:
+        return _fetch_one(
+            f"""
+            INSERT INTO months (household_id, month, main_start_reading, main_end_reading,
+                                monthly_bill, dg_bill, notes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING {', '.join(MONTH_COLS)}
+            """,
+            (hid, month, float(main_start_reading), float(main_end_reading),
+             float(monthly_bill), float(dg_bill), notes or ""),
+        )
+    except errors.UniqueViolation:
+        raise ValueError(f"Month {month} already exists")
 
 
-def update_month(month: str, **kwargs) -> bool:
+def update_month(hid: UUID, month: str, **kwargs) -> Optional[Dict[str, Any]]:
     allowed = {"main_start_reading", "main_end_reading", "monthly_bill", "dg_bill", "notes"}
-    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    params = tuple(updates.values()) + (month,)
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE months SET {set_clause} WHERE month = ?", params)
-        conn.commit()
-        return cursor.rowcount > 0
-    finally:
-        conn.close()
-
-
-def get_previous_month(month: str) -> Optional[str]:
-    """Return the chronologically previous month stored in the database."""
-    df = get_months()
-    if df.empty:
-        return None
-    months = sorted(df["month"].dropna().astype(str).tolist())
-    try:
-        idx = months.index(month)
-    except ValueError:
-        # If the month is not yet stored, return the last stored month.
-        return months[-1] if months else None
-    return months[idx - 1] if idx > 0 else None
+        return get_month(hid, month)
+    return _fetch_one(
+        f"""
+        UPDATE months SET {_set_clause(updates)}
+        WHERE household_id = %s AND month = %s
+        RETURNING {', '.join(MONTH_COLS)}
+        """,
+        (*updates.values(), hid, month),
+    )
 
 
 # ---------------------------------------------------------------------------
 # Readings
 # ---------------------------------------------------------------------------
-def get_readings(month: Optional[str] = None) -> pd.DataFrame:
+READING_COLS = ["month", "roommate_id", "roommate", "current_reading"]
+
+
+def list_readings(hid: UUID, month: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = """
+        SELECT r.month, r.roommate_id, rm.name AS roommate, r.current_reading
+        FROM readings r JOIN roommates rm ON rm.id = r.roommate_id
+        WHERE r.household_id = %s
+    """
+    params: tuple = (hid,)
     if month is not None:
-        return _df_from_query(
-            "SELECT month, roommate, current_reading FROM readings WHERE month = ? ORDER BY roommate",
-            (month,),
-        )
-    return _df_from_query("SELECT month, roommate, current_reading FROM readings ORDER BY month, roommate")
+        query += " AND r.month = %s"
+        params += (month,)
+    return _fetch(query + " ORDER BY r.month, rm.name", params)
 
 
-def set_reading(month: str, roommate: str, current_reading: float) -> None:
+def set_reading(hid: UUID, month: str, roommate_id: int, current_reading: float) -> None:
     _execute(
         """
-        INSERT INTO readings (month, roommate, current_reading)
-        VALUES (?, ?, ?)
-        ON CONFLICT(month, roommate) DO UPDATE SET current_reading = excluded.current_reading
+        INSERT INTO readings (household_id, month, roommate_id, current_reading)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (household_id, month, roommate_id)
+        DO UPDATE SET current_reading = excluded.current_reading
         """,
-        (month, roommate, float(current_reading)),
+        (hid, month, roommate_id, float(current_reading)),
     )
-
-
-def get_reading(month: str, roommate: str) -> Optional[float]:
-    df = _df_from_query(
-        "SELECT current_reading FROM readings WHERE month = ? AND roommate = ?",
-        (month, roommate),
-    )
-    if df.empty:
-        return None
-    val = df.iloc[0]["current_reading"]
-    return float(val) if pd.notna(val) else None
 
 
 # ---------------------------------------------------------------------------
 # Recharges
 # ---------------------------------------------------------------------------
-def get_recharges() -> pd.DataFrame:
-    return _df_from_query("SELECT id, date, roommate, amount, notes FROM recharges ORDER BY date, id")
+RECHARGE_COLS = ["id", "date", "roommate_id", "roommate", "amount", "notes"]
+_RECHARGE_SELECT = """
+    SELECT r.id, to_char(r.date, 'YYYY-MM-DD') AS date, r.roommate_id,
+           rm.name AS roommate, r.amount, r.notes
+    FROM recharges r JOIN roommates rm ON rm.id = r.roommate_id
+"""
 
 
-def get_recharge(rid: int) -> Optional[pd.Series]:
-    df = _df_from_query("SELECT id, date, roommate, amount, notes FROM recharges WHERE id = ?", (rid,))
-    if df.empty:
-        return None
-    return df.iloc[0]
+def list_recharges(hid: UUID, month: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = _RECHARGE_SELECT + " WHERE r.household_id = %s"
+    params: tuple = (hid,)
+    if month is not None:
+        query += " AND to_char(r.date, 'YYYY-MM') = %s"
+        params += (month,)
+    return _fetch(query + " ORDER BY r.date, r.id", params)
 
 
-def add_recharge(date: str, roommate: str, amount: float, notes: Optional[str] = None) -> int:
-    rid = _execute(
-        "INSERT INTO recharges (date, roommate, amount, notes) VALUES (?, ?, ?, ?)",
-        (date, roommate, float(amount), notes or ""),
+def get_recharge(hid: UUID, rid: int) -> Optional[Dict[str, Any]]:
+    return _fetch_one(_RECHARGE_SELECT + " WHERE r.household_id = %s AND r.id = %s", (hid, rid))
+
+
+def add_recharge(hid: UUID, date: str, roommate_id: int, amount: float,
+                 notes: Optional[str] = None) -> int:
+    row = _fetch_one(
+        """
+        INSERT INTO recharges (household_id, date, roommate_id, amount, notes)
+        VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """,
+        (hid, date, roommate_id, float(amount), notes or ""),
     )
-    return rid
+    return row["id"]
 
 
-def update_recharge(rid: int, **kwargs) -> bool:
-    allowed = {"date", "roommate", "amount", "notes"}
+def update_recharge(hid: UUID, rid: int, **kwargs) -> bool:
+    allowed = {"date", "roommate_id", "amount", "notes"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
-        return False
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    params = tuple(updates.values()) + (rid,)
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE recharges SET {set_clause} WHERE id = ?", params)
-        conn.commit()
-        return cursor.rowcount > 0
-    finally:
-        conn.close()
+        return get_recharge(hid, rid) is not None
+    return _execute(
+        f"UPDATE recharges SET {_set_clause(updates)} WHERE household_id = %s AND id = %s",
+        (*updates.values(), hid, rid),
+    ) > 0
 
 
-def delete_recharge(rid: int) -> bool:
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM recharges WHERE id = ?", (rid,))
-        conn.commit()
-        return cursor.rowcount > 0
-    finally:
-        conn.close()
+def delete_recharge(hid: UUID, rid: int) -> bool:
+    return _execute("DELETE FROM recharges WHERE household_id = %s AND id = %s", (hid, rid)) > 0
 
 
-def get_recharges_by_month(month: str) -> pd.DataFrame:
-    year, mon = int(month[:4]), int(month[5:7])
-    last_day = pd.Period(f"{year}-{mon}", freq="M").days_in_month
-    month_start = f"{month}-01"
-    month_end = f"{year:04d}-{mon:02d}-{last_day:02d}"
-    return _df_from_query(
-        "SELECT id, date, roommate, amount, notes FROM recharges WHERE date BETWEEN ? AND ? ORDER BY date, id",
-        (month_start, month_end),
-    )
+# ---------------------------------------------------------------------------
+# In-memory snapshot for calc / export
+# ---------------------------------------------------------------------------
+class HouseholdData:
+    """One household's tables loaded once, with the lookups calc/export need."""
 
+    def __init__(self, hid: UUID):
+        self.roommates = pd.DataFrame(list_roommates(hid), columns=ROOMMATE_COLS)
+        self.months = pd.DataFrame(list_months(hid), columns=MONTH_COLS)
+        self.readings = pd.DataFrame(list_readings(hid), columns=READING_COLS)
+        self.recharges = pd.DataFrame(list_recharges(hid), columns=RECHARGE_COLS)
 
-def get_recharges_for_roommate(roommate: str, up_to_month: Optional[str] = None) -> pd.DataFrame:
-    if up_to_month is not None:
-        return _df_from_query(
-            "SELECT id, date, roommate, amount, notes FROM recharges WHERE roommate = ? AND date <= ? ORDER BY date",
-            (roommate, f"{up_to_month}-31"),
-        )
-    return _df_from_query(
-        "SELECT id, date, roommate, amount, notes FROM recharges WHERE roommate = ? ORDER BY date",
-        (roommate,),
-    )
+    def get_roommates(self) -> pd.DataFrame:
+        return self.roommates
+
+    def get_months(self) -> pd.DataFrame:
+        return self.months
+
+    def get_recharges(self) -> pd.DataFrame:
+        return self.recharges
+
+    def get_month(self, month: str) -> Optional[pd.Series]:
+        rows = self.months[self.months["month"] == month]
+        return None if rows.empty else rows.iloc[0]
+
+    def get_readings(self, month: str) -> pd.DataFrame:
+        return self.readings[self.readings["month"] == month]
+
+    def get_reading(self, month: str, roommate: str) -> Optional[float]:
+        rows = self.readings[(self.readings["month"] == month) & (self.readings["roommate"] == roommate)]
+        if rows.empty or pd.isna(rows.iloc[0]["current_reading"]):
+            return None
+        return float(rows.iloc[0]["current_reading"])
+
+    def get_previous_month(self, month: str) -> Optional[str]:
+        earlier = sorted(m for m in self.months["month"].astype(str) if m < month)
+        return earlier[-1] if earlier else None
+
+    def get_roommate_id_by_name(self, name: str) -> Optional[int]:
+        rows = self.roommates[self.roommates["name"] == name]
+        return None if rows.empty else int(rows.iloc[0]["id"])
+
+    def latest_month_with_readings(self) -> Optional[str]:
+        months = self.readings["month"].dropna().astype(str)
+        return months.max() if not months.empty else None

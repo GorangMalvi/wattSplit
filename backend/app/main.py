@@ -1,22 +1,29 @@
 """
 FastAPI backend for the electricity bill splitter.
+
+Every data route needs a Supabase access token (``Authorization: Bearer``)
+and an ``X-Household-Id`` header naming a household the user belongs to.
 """
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, List, Optional
+from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 
 from . import calc, db, export
+from .auth import current_user_id
 from .models import (
+    HouseholdCreate,
+    HouseholdJoin,
+    HouseholdOut,
     MonthCalculation,
     MonthCreate,
     MonthDetail,
     MonthOut,
+    MonthUpdate,
     ReadingUpdate,
     RechargeCreate,
     RechargeOut,
@@ -28,9 +35,9 @@ from .models import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Ensure the Excel database exists on startup."""
-    db.init_db()
+    db.open_pool()
     yield
+    db.close_pool()
 
 
 app = FastAPI(title="Electricity Bill Splitter", lifespan=lifespan)
@@ -44,83 +51,123 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+MonthParam = Annotated[str, Path(pattern=r"^\d{4}-\d{2}$")]
+UserId = Annotated[str, Depends(current_user_id)]
+
+
+def current_household(user_id: UserId, x_household_id: UUID = Header(...)) -> UUID:
+    """FastAPI dependency: the household in X-Household-Id, if the user is a member."""
+    if not db.is_member(user_id, x_household_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this household")
+    return x_household_id
+
+
+HouseholdId = Annotated[UUID, Depends(current_household)]
+
+
+def _recharge_out(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "date": row["date"],
+        "roommate_id": row["roommate_id"],
+        "amount": row["amount"],
+        "notes": row["notes"],
+        "month": row["date"][:7],
+    }
+
+
+def _require_roommate(hid: UUID, roommate_id: int) -> None:
+    if db.get_roommate(hid, roommate_id) is None:
+        raise HTTPException(status_code=404, detail="Roommate not found")
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Households
+# ---------------------------------------------------------------------------
+@app.get("/api/households", response_model=List[HouseholdOut])
+def list_households(user_id: UserId):
+    return db.list_households(user_id)
+
+
+@app.post("/api/households", response_model=HouseholdOut, status_code=201)
+def create_household(payload: HouseholdCreate, user_id: UserId):
+    return db.create_household(user_id, payload.name)
+
+
+@app.post("/api/households/join", response_model=HouseholdOut)
+def join_household(payload: HouseholdJoin, user_id: UserId):
+    household = db.join_household(user_id, payload.invite_code)
+    if household is None:
+        raise HTTPException(status_code=404, detail="No household with that invite code")
+    return household
+
 
 # ---------------------------------------------------------------------------
 # Roommates
 # ---------------------------------------------------------------------------
 @app.get("/api/roommates", response_model=List[RoommateOut])
-def list_roommates():
-    df = db.get_roommates()
-    if df.empty:
-        return []
-    return df.to_dict(orient="records")
+def list_roommates(hid: HouseholdId):
+    return db.list_roommates(hid)
 
 
 @app.post("/api/roommates", response_model=RoommateOut, status_code=201)
-def create_roommate(payload: RoommateCreate):
-    rid = db.add_roommate(
-        name=payload.name,
-        join_date=payload.join_date or "",
-        leave_date=payload.leave_date or "",
-        is_active=payload.is_active,
-    )
-    df = db.get_roommates()
-    row = df[df["id"] == rid].iloc[0]
-    return row.to_dict()
+def create_roommate(payload: RoommateCreate, hid: HouseholdId):
+    try:
+        return db.add_roommate(
+            hid,
+            name=payload.name,
+            join_date=payload.join_date or "",
+            leave_date=payload.leave_date or "",
+            is_active=payload.is_active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.put("/api/roommates/{roommate_id}", response_model=RoommateOut)
-def update_roommate(roommate_id: int, payload: RoommateCreate):
-    updated = db.update_roommate(
-        roommate_id,
-        name=payload.name,
-        join_date=payload.join_date or "",
-        leave_date=payload.leave_date or "",
-        is_active=payload.is_active,
-    )
-    if not updated:
+def update_roommate(roommate_id: int, payload: RoommateCreate, hid: HouseholdId):
+    try:
+        updated = db.update_roommate(
+            hid,
+            roommate_id,
+            name=payload.name,
+            join_date=payload.join_date or "",
+            leave_date=payload.leave_date or "",
+            is_active=payload.is_active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if updated is None:
         raise HTTPException(status_code=404, detail="Roommate not found")
-    df = db.get_roommates()
-    row = df[df["id"] == roommate_id].iloc[0]
-    return row.to_dict()
+    return updated
 
 
 # ---------------------------------------------------------------------------
 # Months
 # ---------------------------------------------------------------------------
 @app.get("/api/months", response_model=List[MonthOut])
-def list_months():
-    df = db.get_months()
-    if df.empty:
-        return []
-    # Sort chronologically.
-    df = df.sort_values("month")
-    return df.to_dict(orient="records")
+def list_months(hid: HouseholdId):
+    return db.list_months(hid)
 
 
 @app.get("/api/months/{month}", response_model=MonthDetail)
-def get_month(month: str):
-    row = db.get_month(month)
+def get_month(month: MonthParam, hid: HouseholdId):
+    row = db.get_month(hid, month)
     if row is None:
         raise HTTPException(status_code=404, detail="Month not found")
-    readings = []
-    for _, r in db.get_readings(month).iterrows():
-        rid = db.get_roommate_id_by_name(str(r["roommate"]))
-        if rid is None:
-            # Skip readings for names no longer in the roommates table.
-            continue
-        readings.append({
-            "month": str(r["month"]),
-            "roommate_id": rid,
-            "current_reading": float(r["current_reading"]),
-        })
-    return {**row.to_dict(), "readings": readings}
+    return {**row, "readings": db.list_readings(hid, month)}
 
 
 @app.post("/api/months", response_model=MonthOut, status_code=201)
-def create_month(payload: MonthCreate):
+def create_month(payload: MonthCreate, hid: HouseholdId):
     try:
-        db.add_month(
+        return db.add_month(
+            hid,
             month=payload.month,
             monthly_bill=payload.monthly_bill,
             dg_bill=payload.dg_bill,
@@ -129,32 +176,26 @@ def create_month(payload: MonthCreate):
             notes=payload.notes,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    row = db.get_month(payload.month)
-    return row.to_dict()
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.put("/api/months/{month}", response_model=MonthOut)
-def update_month(month: str, payload: MonthCreate):
-    # Only update the supplied fields; keep month id stable.
-    data = payload.model_dump(exclude_unset=True)
-    data.pop("month", None)
-    updated = db.update_month(month, **data)
-    if not updated:
+def update_month(month: MonthParam, payload: MonthUpdate, hid: HouseholdId):
+    updated = db.update_month(hid, month, **payload.model_dump(exclude_unset=True))
+    if updated is None:
         raise HTTPException(status_code=404, detail="Month not found")
-    row = db.get_month(month)
-    return row.to_dict()
+    return updated
 
 
 # ---------------------------------------------------------------------------
 # Readings
 # ---------------------------------------------------------------------------
 @app.put("/api/readings/{month}/{roommate_id}")
-def update_reading(month: str, roommate_id: int, payload: ReadingUpdate):
-    name = db.get_roommate_name_by_id(roommate_id)
-    if name is None:
-        raise HTTPException(status_code=404, detail="Roommate not found")
-    db.set_reading(month, name, payload.current_reading)
+def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, hid: HouseholdId):
+    if db.get_month(hid, month) is None:
+        raise HTTPException(status_code=404, detail="Month not found")
+    _require_roommate(hid, roommate_id)
+    db.set_reading(hid, month, roommate_id, payload.current_reading)
     return {"month": month, "roommate_id": roommate_id, "current_reading": payload.current_reading}
 
 
@@ -162,81 +203,38 @@ def update_reading(month: str, roommate_id: int, payload: ReadingUpdate):
 # Recharges
 # ---------------------------------------------------------------------------
 @app.get("/api/recharges", response_model=List[RechargeOut])
-def list_recharges(month: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}$")):
-    if month:
-        df = db.get_recharges_by_month(month)
-    else:
-        df = db.get_recharges()
-    if df.empty:
-        return []
-    records = []
-    for _, row in df.iterrows():
-        rid = db.get_roommate_id_by_name(str(row["roommate"]))
-        if rid is None:
-            # Skip non-roommate entries such as "DG".
-            continue
-        records.append({
-            "id": int(row["id"]),
-            "date": str(row["date"]),
-            "roommate_id": rid,
-            "amount": float(row["amount"]),
-            "notes": str(row.get("notes", "")),
-            "month": str(row["date"])[:7],
-        })
-    return records
+def list_recharges(hid: HouseholdId, month: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}$")):
+    return [_recharge_out(r) for r in db.list_recharges(hid, month)]
 
 
 @app.post("/api/recharges", response_model=RechargeOut, status_code=201)
-def create_recharge(payload: RechargeCreate):
-    name = db.get_roommate_name_by_id(payload.roommate_id)
-    if name is None:
-        raise HTTPException(status_code=404, detail="Roommate not found")
+def create_recharge(payload: RechargeCreate, hid: HouseholdId):
+    _require_roommate(hid, payload.roommate_id)
     rid = db.add_recharge(
+        hid,
         date=payload.recharge_date.isoformat(),
-        roommate=name,
+        roommate_id=payload.roommate_id,
         amount=payload.amount,
         notes=payload.notes or "",
     )
-    return {
-        "id": rid,
-        "date": payload.recharge_date.isoformat(),
-        "roommate_id": payload.roommate_id,
-        "amount": payload.amount,
-        "notes": payload.notes or "",
-        "month": payload.recharge_date.isoformat()[:7],
-    }
+    return _recharge_out(db.get_recharge(hid, rid))
 
 
 @app.put("/api/recharges/{recharge_id}", response_model=RechargeOut)
-def update_recharge(recharge_id: int, payload: RechargeUpdate):
+def update_recharge(recharge_id: int, payload: RechargeUpdate, hid: HouseholdId):
     data = payload.model_dump(exclude_unset=True, by_alias=True)
-    if "roommate_id" in data:
-        name = db.get_roommate_name_by_id(data["roommate_id"])
-        if name is None:
-            raise HTTPException(status_code=404, detail="Roommate not found")
-        data["roommate"] = name
-        data.pop("roommate_id")
-    if "date" in data and data["date"] is not None:
+    if data.get("roommate_id") is not None:
+        _require_roommate(hid, data["roommate_id"])
+    if data.get("date") is not None:
         data["date"] = data["date"].isoformat()
-    updated = db.update_recharge(recharge_id, **data)
-    if not updated:
+    if not db.update_recharge(hid, recharge_id, **data):
         raise HTTPException(status_code=404, detail="Recharge not found")
-    row = db.get_recharge(recharge_id)
-    rid = db.get_roommate_id_by_name(str(row["roommate"]))
-    return {
-        "id": int(row["id"]),
-        "date": str(row["date"]),
-        "roommate_id": rid,
-        "amount": float(row["amount"]),
-        "notes": str(row.get("notes", "")),
-        "month": str(row["date"])[:7],
-    }
+    return _recharge_out(db.get_recharge(hid, recharge_id))
 
 
 @app.delete("/api/recharges/{recharge_id}", status_code=204)
-def delete_recharge(recharge_id: int):
-    deleted = db.delete_recharge(recharge_id)
-    if not deleted:
+def delete_recharge(recharge_id: int, hid: HouseholdId):
+    if not db.delete_recharge(hid, recharge_id):
         raise HTTPException(status_code=404, detail="Recharge not found")
     return None
 
@@ -245,22 +243,22 @@ def delete_recharge(recharge_id: int):
 # Calculation & history
 # ---------------------------------------------------------------------------
 @app.get("/api/calculate/{month}", response_model=MonthCalculation)
-def calculate_month(month: str):
+def calculate_month(month: MonthParam, hid: HouseholdId):
     try:
-        return calc.calculate_month(month)
+        return calc.calculate_month(month, db.HouseholdData(hid))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/api/history")
-def history():
+def history(hid: HouseholdId):
     """Return running balances for all roommates across all months."""
-    months_df = db.get_months().sort_values("month")
-    if months_df.empty:
+    data = db.HouseholdData(hid)
+    latest_month = data.latest_month_with_readings()
+    if latest_month is None:
         return []
-    latest_month = months_df.iloc[-1]["month"]
     try:
-        result = calc.calculate_month(latest_month)
+        result = calc.calculate_month(latest_month, data)
     except ValueError:
         return []
     return result["running_balances"]
@@ -270,13 +268,13 @@ def history():
 # Export
 # ---------------------------------------------------------------------------
 @app.get("/api/export/{month}")
-def export_month(month: str):
+def export_month(month: MonthParam, hid: HouseholdId):
     try:
-        path = export.generate_month_report(month)
+        content = export.generate_month_report(month, db.HouseholdData(hid))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    return FileResponse(
-        path,
+    return Response(
+        content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=path.name,
+        headers={"Content-Disposition": f'attachment; filename="{month}_report.xlsx"'},
     )

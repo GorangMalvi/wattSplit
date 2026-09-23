@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   getMonths,
   getMonth,
+  createMonth,
   updateMonth,
   getRoommates,
+  createRoommate,
+  updateRoommate,
   getCalculate,
   getHistory,
   getRecharges,
@@ -11,9 +14,11 @@ import {
   updateRecharge,
   deleteRecharge,
   updateReading,
-  getExportUrl,
+  downloadExport,
 } from './api';
 import MonthSelector from './components/MonthSelector';
+import NewMonthForm from './components/NewMonthForm';
+import RoommatesTable from './components/RoommatesTable';
 import SummaryCard from './components/SummaryCard';
 import ReadingsTable from './components/ReadingsTable';
 import RechargesTable from './components/RechargesTable';
@@ -35,6 +40,16 @@ function formatNumber(value, digits = 2) {
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
+// Mirrors calc._roommate_is_active on the backend.
+function isActiveIn(roommate, month) {
+  const join = roommate.join_date || '';
+  const leave = roommate.leave_date || '';
+  if (!roommate.is_active) return Boolean(leave) && month <= leave;
+  if (join && month < join) return false;
+  if (leave && month > leave) return false;
+  return true;
+}
+
 function App() {
   const [months, setMonths] = useState([]);
   const [roommates, setRoommates] = useState([]);
@@ -46,13 +61,14 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [showNewMonth, setShowNewMonth] = useState(false);
 
   const selectedMonthDetails = useMemo(
     () => months.find((m) => m.month === selectedMonth) || null,
     [months, selectedMonth]
   );
 
-  const loadInitial = async () => {
+  const loadInitial = async (monthToSelect) => {
     setLoading(true);
     setError(null);
     try {
@@ -65,7 +81,9 @@ function App() {
       setMonths(sortedMonths);
       setRoommates(roommatesRes);
       setHistory(historyRes);
-      if (sortedMonths.length > 0) {
+      if (monthToSelect) {
+        setSelectedMonth(monthToSelect);
+      } else if (sortedMonths.length > 0) {
         setSelectedMonth(sortedMonths[0].month);
       }
     } catch (err) {
@@ -80,14 +98,17 @@ function App() {
     setLoading(true);
     setError(null);
     try {
-      const [monthRes, calcRes, rechargesRes] = await Promise.all([
+      const [monthRes, calcRes, rechargesRes, historyRes] = await Promise.all([
         getMonth(month),
-        getCalculate(month),
+        // No split yet for a month without readings; that's not an error.
+        getCalculate(month).catch(() => null),
         getRecharges(month),
+        getHistory(),
       ]);
       setMonthData(monthRes);
       setCalcData(calcRes);
       setRecharges(rechargesRes);
+      setHistory(historyRes);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -157,7 +178,7 @@ function App() {
       }
       const [rechargesRes, calcRes] = await Promise.all([
         getRecharges(selectedMonth),
-        getCalculate(selectedMonth),
+        getCalculate(selectedMonth).catch(() => null),
       ]);
       setRecharges(rechargesRes);
       setCalcData(calcRes);
@@ -175,7 +196,7 @@ function App() {
       await deleteRecharge(id);
       const [rechargesRes, calcRes] = await Promise.all([
         getRecharges(selectedMonth),
-        getCalculate(selectedMonth),
+        getCalculate(selectedMonth).catch(() => null),
       ]);
       setRecharges(rechargesRes);
       setCalcData(calcRes);
@@ -186,13 +207,73 @@ function App() {
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!selectedMonth) return;
-    window.open(getExportUrl(selectedMonth), '_blank');
+    try {
+      await downloadExport(selectedMonth);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleCreateMonth = async (payload) => {
+    setSaving(true);
+    try {
+      const created = await createMonth(payload);
+      setShowNewMonth(false);
+      await loadInitial(created.month);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRoommateAdd = async (payload) => {
+    setSaving(true);
+    try {
+      const created = await createRoommate(payload);
+      setRoommates((prev) => [...prev, created]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRoommateUpdate = async (id, payload) => {
+    setSaving(true);
+    try {
+      const updated = await updateRoommate(id, payload);
+      setRoommates((prev) => prev.map((r) => (r.id === id ? updated : r)));
+      if (selectedMonth) await loadMonthData(selectedMonth);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const summary = calcData?.summary || {};
   const splitRows = calcData?.roommates || [];
+  // One row per roommate active this month (or with a stored reading), so
+  // readings can be entered before the first split exists.
+  const readingRows = useMemo(() => {
+    const splitById = Object.fromEntries(splitRows.map((r) => [r.roommate_id, r]));
+    const readingById = Object.fromEntries(
+      (monthData?.readings || []).map((r) => [r.roommate_id, r.current_reading])
+    );
+    return roommates
+      .filter((rm) => readingById[rm.id] !== undefined || isActiveIn(rm, selectedMonth))
+      .map((rm) => ({
+        roommate_id: rm.id,
+        name: rm.name,
+        previous_reading: splitById[rm.id]?.previous_reading ?? null,
+        current_reading: readingById[rm.id] ?? null,
+        sub_units: splitById[rm.id]?.sub_units ?? null,
+      }));
+  }, [roommates, monthData, splitRows, selectedMonth]);
+
   const selectedMonthBalances = splitRows.map((r) => ({
     id: r.roommate_id,
     name: r.name,
@@ -215,6 +296,13 @@ function App() {
               onChange={handleMonthChange}
             />
             <button
+              onClick={() => setShowNewMonth(true)}
+              disabled={loading || showNewMonth}
+              className="btn-secondary"
+            >
+              New Month
+            </button>
+            <button
               onClick={handleExport}
               disabled={!selectedMonth || loading}
               className="btn-primary"
@@ -226,8 +314,30 @@ function App() {
 
         {error && <ErrorAlert message={error} onRetry={() => loadMonthData(selectedMonth)} />}
 
+        {(showNewMonth || (!loading && months.length === 0)) && (
+          <NewMonthForm
+            months={months}
+            onCreate={handleCreateMonth}
+            onCancel={months.length > 0 ? () => setShowNewMonth(false) : null}
+            loading={saving}
+          />
+        )}
+
         {loading && months.length === 0 ? (
           <LoadingSpinner />
+        ) : months.length === 0 ? (
+          <div className="card">
+            <h2 className="mb-1 text-lg font-semibold text-slate-900">Roommates</h2>
+            <p className="mb-4 text-sm text-slate-500">
+              Add everyone who shares the bill, then create your first month above.
+            </p>
+            <RoommatesTable
+              roommates={roommates}
+              onAdd={handleRoommateAdd}
+              onUpdate={handleRoommateUpdate}
+              loading={saving}
+            />
+          </div>
         ) : (
           <>
             {/* Summary Cards */}
@@ -324,7 +434,7 @@ function App() {
                 <LoadingSpinner />
               ) : (
                 <ReadingsTable
-                  rows={splitRows}
+                  rows={readingRows}
                   onUpdate={handleReadingUpdate}
                   loading={saving}
                 />
@@ -352,6 +462,17 @@ function App() {
             <div className="card">
               <h2 className="mb-4 text-lg font-semibold text-slate-900">Bill Split</h2>
               {loading ? <LoadingSpinner /> : <BillSplitTable rows={splitRows} />}
+            </div>
+
+            {/* Roommates */}
+            <div className="card">
+              <h2 className="mb-4 text-lg font-semibold text-slate-900">Roommates</h2>
+              <RoommatesTable
+                roommates={roommates}
+                onAdd={handleRoommateAdd}
+                onUpdate={handleRoommateUpdate}
+                loading={saving}
+              />
             </div>
 
             {/* Balances */}

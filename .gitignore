@@ -1,26 +1,62 @@
+# Secrets: real values live in .env (see .env.example)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local tooling / assistant config
+.claude/
+.mcp.json
+
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 venv/
 .venv/
 env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Node / build
 node_modules/
 frontend/dist/
+dist/
+build/
+coverage/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Personal data (DB, imported sheets, generated reports)
-backend/data/*
-!backend/data/.gitkeep
-backend/exports/*
-!backend/exports/.gitkeep
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+
+# Old local SQLite data, imported sheets, generated reports
+backend/data/
+backend/exports/
 *.xlsx
+*.xls
+*.csv
 *.db
 *.db-journal
+*.sqlite3
+
+# One-off local scripts
+inspect_excel.py
 
 # Editor / OS
 .vscode/
 .idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
+desktop.ini
 *.log

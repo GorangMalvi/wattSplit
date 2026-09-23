@@ -6,18 +6,21 @@ services:
     container_name: electricity-backend
     ports:
       - "8000:8000"
-    volumes:
-      # Persist SQLite database and exports
-      - ./backend/data:/app/data
-      - ./backend/exports:/app/exports
     environment:
       - PYTHONUNBUFFERED=1
+      # Supabase settings come from .env (see .env.example)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET:-}
+      - DATABASE_URL=${DATABASE_URL}
+      - MAILTRAP_API_TOKEN=${MAILTRAP_API_TOKEN:-}
+      - MAIL_FROM_EMAIL=${MAIL_FROM_EMAIL:-}
+      - MAIL_FROM_NAME=${MAIL_FROM_NAME:-wattSplit}
     networks:
       - electricity-net
     restart: unless-stopped
     healthcheck:
       # python:3.11-slim has no curl, so probe with Python itself
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/roommates', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -30,6 +33,9 @@ services:
       args:
         # Route API calls through nginx's /api proxy (same origin, no CORS)
         VITE_API_URL: /api
+        # Public Supabase values baked into the browser bundle
+        VITE_SUPABASE_URL: ${SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
     container_name: electricity-frontend
     ports:
       # LOCAL_HOST_URL from .env (http://wattsplit.localhost)
