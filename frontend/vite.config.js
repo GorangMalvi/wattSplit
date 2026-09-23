@@ -7,9 +7,20 @@ export default defineConfig(({ mode }) => {
   // build args under Docker). Only the public URL and anon key reach the bundle.
   const env = loadEnv(mode, '..', '')
 
+  // The Android app has no /api proxy, so it calls the deployed backend directly.
+  const mobileDefines = {}
+  if (mode === 'android') {
+    const apiUrl = (env.MOBILE_API_URL || '').replace(/\/$/, '')
+    if (!apiUrl.startsWith('https://')) {
+      throw new Error('Set MOBILE_API_URL in .env to the deployed backend, e.g. https://wattsplit-api.onrender.com/api')
+    }
+    mobileDefines['import.meta.env.VITE_API_URL'] = JSON.stringify(apiUrl)
+  }
+
   return {
     plugins: [react()],
     define: {
+      ...mobileDefines,
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(
         env.VITE_SUPABASE_URL || env.SUPABASE_URL || ''
       ),
