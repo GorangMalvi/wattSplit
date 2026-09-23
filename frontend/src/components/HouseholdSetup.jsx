@@ -60,7 +60,7 @@ function HouseholdSetup({ onDone, onCancel, onSignOut }) {
           <form onSubmit={handleJoin} className="card flex flex-col gap-3">
             <h2 className="text-lg font-semibold text-slate-900">Join with a code</h2>
             <label htmlFor="invite-code" className="text-xs font-medium text-slate-500">
-              Invite code
+              Household code, or the personal invite code from your email
             </label>
             <input
               id="invite-code"

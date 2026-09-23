@@ -83,11 +83,17 @@ The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.ap
 
 ## Features
 - Passwordless sign-in with an emailed one-time code; households with invite codes
+- **Invite roommates by email**: the owner adds a roommate with an email (or clicks Invite). They get a link and a personal code; signing in with that email joins the household and links them to that roommate. The owner can copy the link/code, resend or revoke; invites expire after 14 days
 - Manage roommates (join/leave months, active flag)
 - Create months; the main meter start reading carries over from the previous month
-- Enter per-room meter readings and recharges/payments
+- **Prepaid meter balances by hand**: each month can take the meter's opening balance, recharge and closing balance; the Monthly Bill is then worked out as opening + recharge − closing, and a new month's opening balance carries over from the last closing balance
+- **Import meter report**: the owner uploads the prepaid meter's Monthly Consumption Report (.xlsx); each month's main meter readings and bill are filled in. Bill = opening balance + recharge − closing balance (everything the meter deducted), rate = bill ÷ main units; the closing balance carries forward
+- Sub-meter readings carry forward: last month's reading is this month's start. For a first month (no reading last month) enter a **start reading**, so only the units used that month are billed
+- Enter per-room meter readings and recharges/payments; each payment is for the **Main** meter or the **DG**, and balances are tracked per meter (energy charge vs main payments, DG share vs DG payments)
 - Auto-calculate the split, including common units and DG charges
-- Running balances
+- **My dashboard**: each flatmate links their login to their roommate, then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
+- Permissions: the household owner edits everything; other members edit only their own readings and payments
+- Balances to date (all bills so far minus all payments)
 - Download a monthly Excel report
 
 ## Project Structure

@@ -15,6 +15,8 @@ services:
       - MAILTRAP_API_TOKEN=${MAILTRAP_API_TOKEN:-}
       - MAIL_FROM_EMAIL=${MAIL_FROM_EMAIL:-}
       - MAIL_FROM_NAME=${MAIL_FROM_NAME:-wattSplit}
+      # Public web address for roommate invite links (default: the page the owner uses)
+      - APP_URL=${APP_URL:-}
     networks:
       - electricity-net
     restart: unless-stopped

@@ -1,11 +1,18 @@
 import { useState } from 'react';
+import { today } from '../format';
+import MeterBadge, { METERS } from './MeterBadge';
 
-function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading }) {
+// canEdit(roommateId): whether this user may add/change that roommate's payments.
+function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading, canEdit = () => true }) {
+  const editable = roommates.filter((rm) => canEdit(rm.id));
+  // With a single choice (a member's own roommate) there's nothing to pick.
+  const defaultRoommate = editable.length === 1 ? editable[0].id : '';
   const [newRecharge, setNewRecharge] = useState({
-    date: new Date().toISOString().slice(0, 10),
-    roommate_id: '',
+    date: today(),
+    roommate_id: defaultRoommate,
     amount: '',
     notes: '',
+    meter: 'main',
   });
 
   const [editing, setEditing] = useState({});
@@ -30,6 +37,7 @@ function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading
       roommate_id: editing.roommate_id,
       amount,
       notes: editing.notes,
+      meter: editing.meter,
     });
     setEditing({});
   };
@@ -42,13 +50,15 @@ function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading
       roommate_id: newRecharge.roommate_id,
       amount,
       notes: newRecharge.notes,
+      meter: newRecharge.meter,
       month,
     });
     setNewRecharge({
-      date: new Date().toISOString().slice(0, 10),
-      roommate_id: '',
+      date: today(),
+      roommate_id: defaultRoommate,
       amount: '',
       notes: '',
+      meter: newRecharge.meter,
     });
   };
 
@@ -62,6 +72,7 @@ function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading
             <th>Date</th>
             <th>Roommate</th>
             <th className="text-right">Amount</th>
+            <th>Meter</th>
             <th>Notes</th>
             <th className="text-center">Actions</th>
           </tr>
@@ -85,7 +96,7 @@ function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading
                     <option value="" disabled>
                       Select
                     </option>
-                    {roommates.map((rm) => (
+                    {editable.map((rm) => (
                       <option key={rm.id} value={rm.id}>
                         {rm.name}
                       </option>
@@ -101,6 +112,19 @@ function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading
                     onChange={(e) => setEditing({ ...editing, amount: e.target.value })}
                     className="w-28 text-right"
                   />
+                </td>
+                <td>
+                  <select
+                    aria-label="Meter"
+                    value={editing.meter || 'main'}
+                    onChange={(e) => setEditing({ ...editing, meter: e.target.value })}
+                  >
+                    {METERS.map(([key, label]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
                 </td>
                 <td>
                   <input
@@ -126,83 +150,105 @@ function RechargesTable({ recharges, roommates, month, onSave, onDelete, loading
                 <td className="text-right tabular-nums">
                   ₹{r.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </td>
+                <td>
+                  <MeterBadge meter={r.meter} />
+                </td>
                 <td className="text-slate-500">{r.notes || '-'}</td>
                 <td className="text-center">
-                  <button
-                    onClick={() => startEdit(r)}
-                    disabled={loading}
-                    className="btn-secondary mr-2 text-xs"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => onDelete(r.id)}
-                    disabled={loading}
-                    className="btn-danger text-xs"
-                  >
-                    Delete
-                  </button>
+                  {canEdit(r.roommate_id) && (
+                    <>
+                      <button
+                        onClick={() => startEdit(r)}
+                        disabled={loading}
+                        className="btn-secondary mr-2 text-xs"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => onDelete(r.id)}
+                        disabled={loading}
+                        className="btn-danger text-xs"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </td>
               </tr>
             )
           )}
 
           {/* Add new recharge row */}
-          <tr className="bg-slate-50/80">
-            <td>
-              <input
-                type="date"
-                value={newRecharge.date}
-                onChange={(e) => setNewRecharge({ ...newRecharge, date: e.target.value })}
-              />
-            </td>
-            <td>
-              <select
-                value={newRecharge.roommate_id}
-                onChange={(e) =>
-                  setNewRecharge({ ...newRecharge, roommate_id: e.target.value })
-                }
-              >
-                <option value="" disabled>
-                  Select roommate
-                </option>
-                {roommates.map((rm) => (
-                  <option key={rm.id} value={rm.id}>
-                    {rm.name}
+          {editable.length > 0 && (
+            <tr className="bg-slate-50/80">
+              <td>
+                <input
+                  type="date"
+                  value={newRecharge.date}
+                  onChange={(e) => setNewRecharge({ ...newRecharge, date: e.target.value })}
+                />
+              </td>
+              <td>
+                <select
+                  value={newRecharge.roommate_id}
+                  onChange={(e) =>
+                    setNewRecharge({ ...newRecharge, roommate_id: e.target.value })
+                  }
+                >
+                  <option value="" disabled>
+                    Select roommate
                   </option>
-                ))}
-              </select>
-            </td>
-            <td>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={newRecharge.amount}
-                onChange={(e) =>
-                  setNewRecharge({ ...newRecharge, amount: e.target.value })
-                }
-                placeholder="0.00"
-                className="w-28 text-right"
-              />
-            </td>
-            <td>
-              <input
-                type="text"
-                value={newRecharge.notes}
-                onChange={(e) =>
-                  setNewRecharge({ ...newRecharge, notes: e.target.value })
-                }
-                placeholder="Optional note"
-                className="w-full"
-              />
-            </td>
-            <td className="text-center">
-              <button onClick={addNew} disabled={loading} className="btn-primary text-xs">
-                Add
-              </button>
-            </td>
-          </tr>
+                  {editable.map((rm) => (
+                    <option key={rm.id} value={rm.id}>
+                      {rm.name}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={newRecharge.amount}
+                  onChange={(e) =>
+                    setNewRecharge({ ...newRecharge, amount: e.target.value })
+                  }
+                  placeholder="0.00"
+                  className="w-28 text-right"
+                />
+              </td>
+              <td>
+                <select
+                  aria-label="Meter"
+                  value={newRecharge.meter}
+                  onChange={(e) => setNewRecharge({ ...newRecharge, meter: e.target.value })}
+                >
+                  {METERS.map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>
+                <input
+                  type="text"
+                  value={newRecharge.notes}
+                  onChange={(e) =>
+                    setNewRecharge({ ...newRecharge, notes: e.target.value })
+                  }
+                  placeholder="Optional note"
+                  className="w-full"
+                />
+              </td>
+              <td className="text-center">
+                <button onClick={addNew} disabled={loading} className="btn-primary text-xs">
+                  Add
+                </button>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>

@@ -50,12 +50,20 @@ Every route except `/api/health` needs `Authorization: Bearer <Supabase access t
 Data routes also need `X-Household-Id: <uuid>` for a household the user belongs to;
 other households return `403`.
 
+Any member can read. The household owner can change anything; other members
+can only change readings and recharges of the roommate their login is linked
+to (`POST /api/me/roommate`), otherwise `403`.
+
 ## API endpoints
 
 - `GET /api/health`
 - `GET /api/households`, `POST /api/households`, `POST /api/households/join`
-- `GET /api/roommates`, `POST /api/roommates`, `PUT /api/roommates/{id}`
+- `GET /api/roommates`, `POST /api/roommates`, `PUT /api/roommates/{id}`, `DELETE /api/roommates/{id}/link` (owner)
+- `POST /api/roommates/{id}/invite` (owner, `{email}`), `GET /api/invites`, `DELETE /api/invites/{id}` (owner), `GET /api/invites/lookup/{code}` (no sign-in), `POST /api/invites/accept` (`{code}`; signed-in email must match). `POST /api/households/join` also accepts a personal invite code
+- `GET /api/me` (role + linked roommate), `POST /api/me/roommate` (`{roommate_id}` or `{name}`), `DELETE /api/me/roommate`
+- `GET /api/me/dashboard` (your months, payments and balance to date)
 - `GET /api/months`, `GET /api/months/{month}`, `POST /api/months`, `PUT /api/months/{month}`
+- `POST /api/meter-report?dry_run=` (owner; raw .xlsx body: preview or import the meter's Monthly Consumption Report)
 - `PUT /api/readings/{month}/{roommate_id}`
 - `GET /api/recharges?month=`, `POST /api/recharges`, `PUT /api/recharges/{id}`, `DELETE /api/recharges/{id}`
 - `GET /api/calculate/{month}`

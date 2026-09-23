@@ -116,13 +116,15 @@ def generate_month_report(month: str, data: HouseholdData) -> bytes:
     row += 1
     ws.cell(row, 1, "Running Balances (cumulative up to this month)").font = Font(bold=True, size=12)
     row += 1
-    bal_headers = ["Roommate", "Cumulative Bill", "Cumulative Recharges", "Balance"]
+    bal_headers = ["Roommate", "Cumulative Bill", "Cumulative Recharges", "Balance",
+                   "Main Balance", "DG Balance"]
     for col, h in enumerate(bal_headers, 1):
         cell = ws.cell(row, col, h)
         _format_header(cell)
     row += 1
     for b in result["running_balances"]:
-        vals = [b["name"], b["total_bill_cumulative"], b["total_recharges_cumulative"], b["balance"]]
+        vals = [b["name"], b["total_bill_cumulative"], b["total_recharges_cumulative"], b["balance"],
+                b["main_balance"], b["dg_balance"]]
         for col, v in enumerate(vals, 1):
             cell = ws.cell(row, col, v)
             cell.border = border
@@ -134,7 +136,7 @@ def generate_month_report(month: str, data: HouseholdData) -> bytes:
     row += 1
     ws.cell(row, 1, f"Recharges recorded in {month}").font = Font(bold=True, size=12)
     row += 1
-    rec_headers = ["Date", "Roommate", "Amount", "Notes"]
+    rec_headers = ["Date", "Roommate", "Amount", "Notes", "Meter"]
     for col, h in enumerate(rec_headers, 1):
         cell = ws.cell(row, col, h)
         _format_header(cell)
@@ -152,6 +154,7 @@ def generate_month_report(month: str, data: HouseholdData) -> bytes:
             amt = ws.cell(row, 3, float(rec["amount"]))
             _format_money(amt)
             ws.cell(row, 4, str(rec.get("notes", "")))
+            ws.cell(row, 5, "DG" if rec.get("meter") == "dg" else "Main")
             row += 1
 
     # Auto-width columns (rough)
