@@ -1,7 +1,12 @@
+import { readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv } from 'vite'
 
 // https://vite.dev/config/
+// The app's version (also the Android versionName): the update check compares
+// it with the latest GitHub release.
+const { version: appVersion } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'))
+
 export default defineConfig(({ mode }) => {
   // Supabase settings live in the repo-root .env shared with the backend (or in
   // build args under Docker). Only the public URL and anon key reach the bundle.
@@ -21,6 +26,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       ...mobileDefines,
+      'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(
         env.VITE_SUPABASE_URL || env.SUPABASE_URL || ''
       ),
