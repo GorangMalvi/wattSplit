@@ -44,7 +44,11 @@ services:
     domains:
       - wattsplit.jugadu.tech
     routes:
-      # Single-page app: every path (e.g. /?invite=CODE) serves index.html.
+      # Shareable app download: always the newest release's wattSplit.apk.
+      - type: redirect
+        source: /download
+        destination: https://github.com/GorangMalvi/wattSplit/releases/latest/download/wattSplit.apk
+      # Single-page app: every other path (e.g. /?invite=CODE) serves index.html.
       - type: rewrite
         source: /*
         destination: /index.html
