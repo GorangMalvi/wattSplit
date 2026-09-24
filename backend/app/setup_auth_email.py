@@ -60,7 +60,10 @@ def _patch_auth_config(project_ref: str, access_token: str, changes: dict) -> No
 def main() -> None:
     project_ref = urlsplit(_required("SUPABASE_URL")).hostname.split(".")[0]
     access_token = _required("SUPABASE_ACCESS_TOKEN")
-    app_url = os.environ.get("LOCAL_HOST_URL", "http://wattsplit.localhost").rstrip("/")
+    # The public web app (APP_URL) when there is one, else the local Docker address.
+    local_url = os.environ.get("LOCAL_HOST_URL", "http://wattsplit.localhost").rstrip("/")
+    app_url = (os.environ.get("APP_URL") or local_url).rstrip("/")
+    allowed = ",".join(dict.fromkeys([app_url, local_url, "http://localhost:5173"]))
 
     # SMTP first: Supabase only allows template edits once a custom provider is set.
     _patch_auth_config(project_ref, access_token, {
@@ -81,7 +84,7 @@ def main() -> None:
         "mailer_subjects_magic_link": CODE_SUBJECT,
         "mailer_templates_magic_link_content": CODE_TEMPLATE,
         "site_url": app_url,
-        "uri_allow_list": f"{app_url},http://localhost:5173",
+        "uri_allow_list": allowed,
     })
     print("Templates: sign-up and sign-in emails now contain a one-time code")
 

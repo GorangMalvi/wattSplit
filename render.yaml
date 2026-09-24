@@ -1,7 +1,8 @@
-# Render blueprint for the wattSplit backend (render.com -> New -> Blueprint).
+# Render blueprint for wattSplit (render.com -> New -> Blueprint).
 # Secrets are "sync: false": Render asks for them on first deploy and never
 # reads them from this file.
 services:
+  # Backend API
   - type: web
     name: wattsplit-api
     runtime: docker
@@ -23,6 +24,41 @@ services:
       - key: MAILTRAP_API_TOKEN
         sync: false
       - key: MAIL_FROM_EMAIL
-        sync: false
+        value: wattsplit@jugadu.tech   # must be on a domain verified in Mailtrap
       - key: MAIL_FROM_NAME
         value: wattSplit
+      # Public web app: used in roommate invite links, and allowed to call the API.
+      - key: APP_URL
+        value: https://wattsplit.jugadu.tech
+      - key: CORS_ORIGINS
+        value: https://wattsplit.jugadu.tech,https://wattsplit-web.onrender.com
+
+  # Web app (static React build), served at https://wattsplit.jugadu.tech
+  - type: web
+    name: wattsplit-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    domains:
+      - wattsplit.jugadu.tech
+    routes:
+      # Shareable app download: always the newest release's wattSplit.apk.
+      - type: redirect
+        source: /download
+        destination: https://github.com/GorangMalvi/wattSplit/releases/latest/download/wattSplit.apk
+      # Single-page app: every other path (e.g. /?invite=CODE) serves index.html.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: VITE_API_URL
+        value: https://wattsplit-api.onrender.com/api
+      # Public values (they ship in the browser bundle anyway).
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
