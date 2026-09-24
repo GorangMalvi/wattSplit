@@ -81,6 +81,15 @@ npm run apk
 ```
 The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Copy it to the phone and open it (allow "install unknown apps" for the file manager / browser you open it with).
 
+## Public web app and invites (wattsplit.jugadu.tech)
+
+Invite links and emails to flatmates need a public web address and a verified sending domain.
+
+1. **Web app on Render**: New -> Static Site from this repo (or use `render.yaml`): root `frontend`, build `npm ci && npm run build`, publish `dist`, rewrite `/*` -> `/index.html`, env `VITE_API_URL=https://wattsplit-api.onrender.com/api`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`. Add the custom domain `wattsplit.jugadu.tech` and a DNS `CNAME wattsplit -> <site>.onrender.com`.
+2. **Backend on Render**: set `APP_URL=https://wattsplit.jugadu.tech`, `CORS_ORIGINS=https://wattsplit.jugadu.tech`, `MAIL_FROM_EMAIL=wattsplit@jugadu.tech`.
+3. **Mailtrap**: add `jugadu.tech` as a sending domain and add its DNS records. Keep a single SPF record that includes both mail services, e.g. `v=spf1 include:spf.titan.email include:_spf.smtp.mailtrap.live ~all`.
+4. **Supabase sign-in emails**: rerun `python -m app.setup_auth_email` with `APP_URL` and `MAIL_FROM_EMAIL` set (it needs a temporary `SUPABASE_ACCESS_TOKEN`; revoke it afterwards), or set the SMTP sender and Site URL in the Supabase dashboard.
+
 ## Features
 - Passwordless sign-in with an emailed one-time code; households with invite codes
 - **Invite roommates by email**: the owner adds a roommate with an email (or clicks Invite). They get a link and a personal code; signing in with that email joins the household and links them to that roommate. The owner can copy the link/code, resend or revoke; invites expire after 14 days
