@@ -31,7 +31,7 @@ services:
       - key: APP_URL
         value: https://wattsplit.jugadu.tech
       - key: CORS_ORIGINS
-        value: https://wattsplit.jugadu.tech
+        value: https://wattsplit.jugadu.tech,https://wattsplit-web.onrender.com
 
   # Web app (static React build), served at https://wattsplit.jugadu.tech
   - type: web
