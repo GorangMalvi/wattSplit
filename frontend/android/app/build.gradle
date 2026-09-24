@@ -11,6 +11,11 @@ if (keystorePropsFile.exists()) {
     keystorePropsFile.withInputStream { keystoreProps.load(it) }
 }
 
+// One version for the app: frontend/package.json. Bump it for every release.
+def appVersion = new groovy.json.JsonSlurper().parse(file('../../package.json')).version
+def (vMajor, vMinor, vPatch) = appVersion.tokenize('.').collect { it as int }
+def appVersionCode = vMajor * 10000 + vMinor * 100 + vPatch
+
 android {
     namespace "com.gorangmalvi.wattsplit"
     compileSdk rootProject.ext.compileSdkVersion
@@ -18,9 +23,10 @@ android {
         applicationId "com.gorangmalvi.wattsplit"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // Bump both for every release: versionCode must go up for updates to install.
-        versionCode 1
-        versionName "1.0.0"
+        // From frontend/package.json "version" (also shown to the in-app update
+        // check). versionCode = major*10000 + minor*100 + patch, so it always goes up.
+        versionCode appVersionCode
+        versionName appVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
