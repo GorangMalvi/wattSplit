@@ -187,7 +187,7 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
     totals: Dict[str, Dict[str, float]] = {}
 
     def entry(name: str) -> Dict[str, float]:
-        return totals.setdefault(name, {"main_bill": 0.0, "dg_bill": 0.0, "main": 0.0, "dg": 0.0})
+        return totals.setdefault(name, {"main_bill": 0.0, "dg_bill": 0.0, "main": 0.0, "dg": 0.0, "settled": 0.0})
 
     for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
         if upto is not None and m > upto:
@@ -209,21 +209,34 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
         amount = float(rec["amount"]) if pd.notna(rec["amount"]) else 0.0
         entry(str(rec["roommate"]).strip())[_meter(rec)] += amount
 
+    # Paying a roommate back: the payer has paid that much more, the receiver
+    # has been repaid it. Counted against the main meter (balances by meter
+    # still add up to the total).
+    for s in getattr(data, "settlement_rows", []):
+        if last_day is not None and s["date"] > last_day:
+            continue
+        amount = float(s["amount"])
+        entry(s["from_roommate"])["settled"] += amount
+        entry(s["to_roommate"])["settled"] -= amount
+
     balances = []
     for name in sorted(totals):
         t = totals[name]
         main_bill, dg_bill = round(t["main_bill"], 2), round(t["dg_bill"], 2)
         main_paid, dg_paid = round(t["main"], 2), round(t["dg"], 2)
+        settled = round(t["settled"], 2)
         total_bill = round(t["main_bill"] + t["dg_bill"], 2)
         recharges = round(t["main"] + t["dg"], 2)
         balances.append({
             "roommate": name,
             "total_bill_cumulative": total_bill,
             "total_recharges_cumulative": recharges,
-            "balance": round(total_bill - recharges, 2),
+            # Paid to (+) or received from (-) other roommates when settling up.
+            "settled_cumulative": settled,
+            "balance": round(total_bill - recharges - settled, 2),
             "main_bill_cumulative": main_bill,
             "main_recharges_cumulative": main_paid,
-            "main_balance": round(main_bill - main_paid, 2),
+            "main_balance": round(main_bill - main_paid - settled, 2),
             "dg_bill_cumulative": dg_bill,
             "dg_recharges_cumulative": dg_paid,
             "dg_balance": round(dg_bill - dg_paid, 2),
@@ -278,6 +291,42 @@ def calculate_month(month: str, data: HouseholdData) -> Dict[str, Any]:
         "roommates": frontend_roommates,
         "running_balances": household_balances(data, upto=month),
     }
+
+
+def settle_up(balances: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Who pays whom so that every balance ends at zero.
+
+    ``balances``: household_balances rows (``roommate_id``, ``name``,
+    ``balance``; positive = owes). They needn't add up to zero: electricity
+    nobody has recorded paying for (the meter's starting balance, recharges
+    not entered in the app) leaves a gap. The gap is shared equally, then the
+    fewest payments are found by matching the biggest debtor with the biggest
+    creditor until all are settled.
+    """
+    people = [b for b in balances if b.get("roommate_id") is not None]
+    if not people:
+        return {"transfers": [], "unpaid_total": 0.0, "unpaid_each": 0.0}
+    gap = round(sum(b["balance"] for b in people), 2)
+    each = gap / len(people)
+    owes = {b["roommate_id"]: b["balance"] - each for b in people}
+    names = {b["roommate_id"]: b["name"] for b in people}
+
+    transfers = []
+    while True:
+        debtor = max(owes, key=lambda r: owes[r])
+        creditor = min(owes, key=lambda r: owes[r])
+        amount = round(min(owes[debtor], -owes[creditor]), 2)
+        if amount < 0.01:
+            break
+        transfers.append({
+            "from_roommate_id": debtor, "from_roommate": names[debtor],
+            "to_roommate_id": creditor, "to_roommate": names[creditor],
+            "amount": amount,
+        })
+        owes[debtor] -= amount
+        owes[creditor] += amount
+    return {"transfers": transfers, "unpaid_total": gap, "unpaid_each": round(each, 2)}
 
 
 def household_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -367,4 +416,5 @@ TOTAL_KEYS = [
     "total_bill_cumulative", "total_recharges_cumulative", "balance",
     "main_bill_cumulative", "main_recharges_cumulative", "main_balance",
     "dg_bill_cumulative", "dg_recharges_cumulative", "dg_balance",
+    "settled_cumulative",
 ]

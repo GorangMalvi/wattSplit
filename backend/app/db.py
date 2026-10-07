@@ -630,6 +630,45 @@ def delete_recharge(hid: UUID, rid: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Settlements (one roommate paying another back)
+# ---------------------------------------------------------------------------
+SETTLEMENT_COLS = ["id", "date", "from_roommate_id", "from_roommate", "to_roommate_id", "to_roommate",
+                   "amount", "notes"]
+_SETTLEMENT_SELECT = """
+    SELECT s.id, to_char(s.date, 'YYYY-MM-DD') AS date,
+           s.from_roommate_id, f.name AS from_roommate, s.to_roommate_id, t.name AS to_roommate,
+           s.amount, s.notes
+    FROM settlements s
+    JOIN roommates f ON f.id = s.from_roommate_id
+    JOIN roommates t ON t.id = s.to_roommate_id
+"""
+
+
+def list_settlements(hid: UUID) -> List[Dict[str, Any]]:
+    return _fetch(_SETTLEMENT_SELECT + " WHERE s.household_id = %s ORDER BY s.date, s.id", (hid,))
+
+
+def get_settlement(hid: UUID, sid: int) -> Optional[Dict[str, Any]]:
+    return _fetch_one(_SETTLEMENT_SELECT + " WHERE s.household_id = %s AND s.id = %s", (hid, sid))
+
+
+def add_settlement(hid: UUID, date: str, from_roommate_id: int, to_roommate_id: int, amount: float,
+                   notes: str, created_by: str) -> Dict[str, Any]:
+    row = _fetch_one(
+        """
+        INSERT INTO settlements (household_id, date, from_roommate_id, to_roommate_id, amount, notes, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+        """,
+        (hid, date, from_roommate_id, to_roommate_id, round(float(amount), 2), notes or "", created_by),
+    )
+    return get_settlement(hid, row["id"])
+
+
+def delete_settlement(hid: UUID, sid: int) -> bool:
+    return _execute("DELETE FROM settlements WHERE household_id = %s AND id = %s", (hid, sid)) > 0
+
+
+# ---------------------------------------------------------------------------
 # In-memory snapshot for calc / export
 # ---------------------------------------------------------------------------
 # All four tables of one household in a single round trip, each as a JSON
@@ -643,7 +682,9 @@ SELECT
     (SELECT coalesce(json_agg(t ORDER BY t.month, t.roommate), '[]')
      FROM ({_READING_SELECT} WHERE r.household_id = %(h)s) t) AS readings,
     (SELECT coalesce(json_agg(t ORDER BY t.date, t.id), '[]')
-     FROM ({_RECHARGE_SELECT} WHERE r.household_id = %(h)s) t) AS recharges
+     FROM ({_RECHARGE_SELECT} WHERE r.household_id = %(h)s) t) AS recharges,
+    (SELECT coalesce(json_agg(t ORDER BY t.date, t.id), '[]')
+     FROM ({_SETTLEMENT_SELECT} WHERE s.household_id = %(h)s) t) AS settlements
 """
 
 
@@ -659,6 +700,7 @@ class HouseholdData:
         self.months = pd.DataFrame(rows["months"], columns=MONTH_COLS)
         self.readings = pd.DataFrame(rows["readings"], columns=READING_COLS)
         self.recharges = pd.DataFrame(rows["recharges"], columns=RECHARGE_COLS)
+        self.settlement_rows: List[Dict[str, Any]] = rows["settlements"]
 
     def get_roommates(self) -> pd.DataFrame:
         return self.roommates
