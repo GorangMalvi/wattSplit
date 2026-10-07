@@ -46,9 +46,10 @@ services:
         VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
     container_name: electricity-frontend
     ports:
-      # LOCAL_HOST_URL from .env (http://wattsplit.localhost)
-      - "${LOCAL_HOST_PORT:-80}:80"
-      - "5173:80"
+      # A production-style build on http://localhost:8080. It uses the LIVE
+      # Supabase project from .env, so it's not for testing changes: use
+      # `npm run local` (http://wattsplit.localhost), which is fully local.
+      - "${DOCKER_WEB_PORT:-8080}:80"
     depends_on:
       backend:
         condition: service_healthy

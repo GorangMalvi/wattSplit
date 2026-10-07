@@ -19,8 +19,11 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Not 5173: docker-compose publishes the built web app there.
+// The device loads http://localhost:5180 (Android won't let adb use port 80),
+// which `adb reverse` forwards to the PC's local web address: port 80
+// (LOCAL_HOST_PORT), or what npm run local passes in WATTSPLIT_WEB_PORT.
 const PORT = 5180;
+const PC_PORT = Number(process.env.WATTSPLIT_WEB_PORT) || 80;
 const SUPABASE_PORT = 54321; // local Supabase (supabase/config.toml)
 const APP_ID = 'com.gorangmalvi.wattsplit.dev';
 const win = process.platform === 'win32';
@@ -79,7 +82,7 @@ if (devices.length === 0) {
 if (devices.length > 1) console.log(`Several devices connected; using ${devices[0].split('\t')[0]}.`);
 const serial = devices[0].split('\t')[0];
 
-if (!(await isVite(PORT))) fail(`Nothing is serving the app on port ${PORT}. Run "npm run local" first.`);
+if (!(await isVite(PC_PORT))) fail(`Nothing is serving the app on port ${PC_PORT}. Run "npm run local" first.`);
 
 // 2. Build and install the dev app, pointed at the dev server.
 const installed = adbOut('-s', serial, 'shell', 'pm', 'list', 'packages', APP_ID).includes(`package:${APP_ID}`);
@@ -114,8 +117,8 @@ if (install) {
 
 // 3. The device's localhost:5180 (Vite) and :54321 (local Supabase sign-in)
 // -> this PC. Works the same for emulators and USB phones.
-for (const port of [PORT, SUPABASE_PORT]) {
-  run(adb, ['-s', serial, 'reverse', `tcp:${port}`, `tcp:${port}`], { shell: false, stdio: 'ignore' });
+for (const [devicePort, pcPort] of [[PORT, PC_PORT], [SUPABASE_PORT, SUPABASE_PORT]]) {
+  run(adb, ['-s', serial, 'reverse', `tcp:${devicePort}`, `tcp:${pcPort}`], { shell: false, stdio: 'ignore' });
 }
 
 // 4. Open it (restarted, so it loads the current code).

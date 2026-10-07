@@ -4,7 +4,8 @@
 //   Local Supabase (Docker, supabase/config.toml): its own Postgres + Auth;
 //     emails land in a local inbox, never sent.
 //   Backend:  uvicorn on 127.0.0.1:8001, pointed at local Supabase only.
-//   Web app:  Vite on http://localhost:5180 with live reload.
+//   Web app:  Vite on http://wattsplit.localhost (LOCAL_HOST_URL / LOCAL_HOST_PORT
+//             in .env) with live reload.
 //   Android:  if an emulator/phone is connected, "wattSplit Dev" opens on it,
 //             live from the same Vite (see android-dev.mjs).
 //   Sign in:  any email, code 123456 (no email at all).
@@ -12,6 +13,7 @@
 // Ctrl+C stops the backend and Vite; local Supabase keeps running (and keeps
 // its data). Stop it with: npx supabase stop --workdir ..
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +22,13 @@ const win = process.platform === 'win32';
 const frontend = join(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = join(frontend, '..');
 const backendDir = join(repo, 'backend');
-const WEB_PORT = 5180;
+// The local address: LOCAL_HOST_URL / LOCAL_HOST_PORT from .env (only these
+// two are read from it), by default http://wattsplit.localhost on port 80.
+const dotenv = existsSync(join(repo, '.env')) ? readFileSync(join(repo, '.env'), 'utf-8') : '';
+const fromEnv = (key) => (dotenv.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] || '').trim().replace(/^["']|["']$/g, '');
+const WEB_PORT = Number(fromEnv('LOCAL_HOST_PORT')) || 80;
+const WEB_URL = (fromEnv('LOCAL_HOST_URL') || `http://wattsplit.localhost${WEB_PORT === 80 ? '' : `:${WEB_PORT}`}`).replace(/\/$/, '');
+const portSuffix = WEB_PORT === 80 ? '' : `:${WEB_PORT}`;
 const API_PORT = 8001; // not 8000: docker compose's backend (live settings) uses that
 // With shell: true (needed for npx on Windows) arguments are joined into one
 // command line, so the folder (it has spaces) must be quoted.
@@ -52,7 +60,14 @@ const supabase = (...args) =>
   spawnSync('npx', ['supabase', ...args, '--workdir', workdir], { cwd: frontend, shell: win, encoding: 'utf-8' });
 
 for (const port of [WEB_PORT, API_PORT]) {
-  if (await portOpen(port)) fail(`Port ${port} is already in use. Is npm run local already running?`);
+  if (!(await portOpen(port))) continue;
+  const docker = spawnSync('docker', ['ps', '--format', '{{.Names}} {{.Ports}}'], { encoding: 'utf-8' }).stdout || '';
+  const holder = docker.split('\n').find((line) => line.includes(`:${port}->`));
+  fail(
+    holder
+      ? `Port ${port} is used by the Docker container ${holder.split(' ')[0]} (docker compose, which uses the LIVE database). Stop it with: docker compose down`
+      : `Port ${port} is already in use. Is npm run local already running?`
+  );
 }
 
 // 1. Local Supabase (the first start downloads its Docker images).
@@ -87,8 +102,8 @@ const backendEnv = {
   DATABASE_URL: sb.DB_URL,
   DEV_LOGIN_EMAILS: '*',
   MAILTRAP_API_TOKEN: '', // invite emails: not sent locally (the app shows the link)
-  APP_URL: `http://localhost:${WEB_PORT}`,
-  CORS_ORIGINS: `http://localhost:${WEB_PORT},http://127.0.0.1:${WEB_PORT}`,
+  APP_URL: WEB_URL,
+  CORS_ORIGINS: [WEB_URL, `http://localhost${portSuffix}`, `http://127.0.0.1${portSuffix}`].join(','),
   PYTHONUNBUFFERED: '1',
 };
 
@@ -131,13 +146,13 @@ if (!(await waitForPort(WEB_PORT, 60))) fail('Vite did not start (see the errors
 const android = spawnSync('node', [join(frontend, 'scripts', 'android-dev.mjs'), '--if-device'], {
   cwd: frontend,
   stdio: 'inherit',
-  env: process.env,
+  env: { ...process.env, WATTSPLIT_WEB_PORT: String(WEB_PORT) },
 });
 
 console.log(`
 ✓ wattSplit is running locally. Nothing here touches the live app.
 
-  Web app      http://localhost:${WEB_PORT}
+  Web app      ${WEB_URL}   (also http://localhost${portSuffix})
   Sign in      any email, code 123456 (no email is sent)
   Data         ${sb.STUDIO_URL || 'http://127.0.0.1:54323'}   (Supabase Studio: the local tables)
   Email inbox  ${sb.MAILPIT_URL || sb.INBUCKET_URL || 'http://127.0.0.1:54324'}   (what Supabase would have emailed)
