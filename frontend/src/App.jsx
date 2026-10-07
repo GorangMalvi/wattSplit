@@ -386,6 +386,16 @@ function App() {
     };
   }, [calcData, monthData]);
   const splitRows = calcData?.roommates || [];
+  // Everything roommates recharged this month (recharges holds the selected month's).
+  const rechargeTotals = useMemo(() => {
+    const totals = { all: 0, main: 0, dg: 0 };
+    for (const r of recharges) {
+      const amount = Number(r.amount) || 0;
+      totals.all += amount;
+      totals[r.meter === 'dg' ? 'dg' : 'main'] += amount;
+    }
+    return totals;
+  }, [recharges]);
   // One row per roommate active this month (or with a stored reading), so
   // readings can be entered before the first split exists.
   const readingRows = useMemo(() => {
@@ -546,7 +556,7 @@ function App() {
             ) : (
               <>
                 {/* Summary Cards */}
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
                   <SummaryCard
                     label="Main Units"
                     value={formatNumber(summary.main_units)}
@@ -554,6 +564,15 @@ function App() {
                       monthData?.main_end_reading,
                       2
                     )}`}
+                  />
+                  <SummaryCard
+                    label="Common Units"
+                    value={formatNumber(summary.common_units)}
+                    subtext={
+                      summary.common_units == null
+                        ? 'Main units − roommates’ units, once readings are in'
+                        : `${formatNumber(summary.main_units)} main − ${formatNumber(summary.sub_units_total)} roommates · ${formatNumber(summary.common_share)} each (${summary.active_roommates} people)`
+                    }
                   />
                   <SummaryCard
                     label="Rate per Unit"
@@ -569,6 +588,11 @@ function App() {
                     label="DG Bill"
                     value={formatMoney(summary.dg_bill)}
                     subtext="Split equally among active roommates"
+                  />
+                  <SummaryCard
+                    label="Total Recharges"
+                    value={formatMoney(rechargeTotals.all)}
+                    subtext={`Main ${formatMoney(rechargeTotals.main)} · DG ${formatMoney(rechargeTotals.dg)} · ${recharges.length} payment${recharges.length === 1 ? '' : 's'}`}
                   />
                 </div>
 

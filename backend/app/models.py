@@ -246,6 +246,12 @@ class CalculationSummary(BaseModel):
     rate_per_unit: float
     total_bill: float
     dg_bill: float
+    # Common units = main_units - sub_units_total (never below 0), shared
+    # equally: common_share each among active_roommates.
+    sub_units_total: Optional[float] = None
+    common_units: Optional[float] = None
+    common_share: Optional[float] = None
+    active_roommates: Optional[int] = None
 
 
 class MonthCalculation(BaseModel):
