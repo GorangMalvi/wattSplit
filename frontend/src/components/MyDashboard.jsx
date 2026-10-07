@@ -239,8 +239,10 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
 }
 
 // voiceEnabled: the server can understand spoken payments ("Say it" fills the
-// form; the person still checks it and taps Add payment).
-function PaymentForm({ roommateId, onSaved, voiceEnabled = false }) {
+// form; the person still checks it and taps Add payment). biggestPayment: the
+// largest payment so far, to flag amounts far above it (speech-to-text can
+// hear "do hazaar" as 20000, and typos happen).
+function PaymentForm({ roommateId, onSaved, voiceEnabled = false, biggestPayment = 0 }) {
   const [date, setDate] = useState(today());
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
@@ -249,6 +251,8 @@ function PaymentForm({ roommateId, onSaved, voiceEnabled = false }) {
   const [error, setError] = useState(null);
   const [heard, setHeard] = useState(null); // the last voice draft
   const value = parseFloat(amount);
+  const unusualAbove = biggestPayment > 0 ? biggestPayment * 3 : 10000;
+  const unusual = !Number.isNaN(value) && value > unusualAbove;
 
   const fillFromVoice = (draft) => {
     setHeard(draft);
@@ -323,6 +327,13 @@ function PaymentForm({ roommateId, onSaved, voiceEnabled = false }) {
             className={voiceRing(heard?.amount !== null)}
             onChange={(e) => setAmount(e.target.value)}
           />
+          {unusual && (
+            <p className="text-xs text-amber-700">
+              {biggestPayment > 0
+                ? `Much more than your biggest payment so far (${formatMoney(biggestPayment)}). Check the amount.`
+                : 'That’s a large amount. Check it before saving.'}
+            </p>
+          )}
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -578,7 +589,12 @@ function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = fa
         </div>
         <div className="card">
           <h3 className="mb-4 text-lg font-semibold text-slate-900">Add a payment</h3>
-          <PaymentForm roommateId={roommate.id} onSaved={load} voiceEnabled={voiceEnabled} />
+          <PaymentForm
+            roommateId={roommate.id}
+            onSaved={load}
+            voiceEnabled={voiceEnabled}
+            biggestPayment={Math.max(0, ...dash.recharges.map((p) => p.amount))}
+          />
         </div>
       </div>
 
