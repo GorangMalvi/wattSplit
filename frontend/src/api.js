@@ -54,6 +54,13 @@ export const createHousehold = (name) =>
 export const joinHousehold = (inviteCode) =>
   api.post('/households/join', { invite_code: inviteCode }).then((res) => res.data);
 
+// Local development sign-in (code 123456, no email): see backend/app/dev_login.py.
+// Only used when import.meta.env.DEV, i.e. never in production builds.
+export const getDevLogin = () => api.get('/dev/login').then((res) => res.data);
+
+export const devLogin = (email, code) =>
+  api.post('/dev/login', { email, code }).then((res) => res.data);
+
 // Months
 export const getMonths = () => api.get('/months').then((res) => res.data);
 

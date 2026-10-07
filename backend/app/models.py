@@ -264,6 +264,22 @@ class MeOut(BaseModel):
     voice_enabled: bool = False  # the server can turn spoken payments into drafts
 
 
+class DevLoginStatus(BaseModel):
+    enabled: bool
+    code: Optional[str] = None
+
+
+class DevLogin(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    code: str = Field(..., max_length=10)
+
+
+class DevLoginToken(BaseModel):
+    """For supabase.auth.verifyOtp({ token_hash, type })."""
+    token_hash: str
+    type: str
+
+
 class VoicePaymentDraft(BaseModel):
     """A spoken payment, understood but not saved: the app shows it to check first."""
     transcript: str

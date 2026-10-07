@@ -61,6 +61,14 @@ npm run dev
 ```
 Open `http://localhost:5173`.
 
+### Sign in without email (local development)
+In `npm run dev` and the Android dev app, sign in with code **123456**: no email is sent. Add to `.env` (never to Render):
+```
+SUPABASE_SERVICE_ROLE_KEY=...      # Supabase > Project Settings > API Keys (service_role / secret). Full admin access: keep it secret
+DEV_LOGIN_EMAILS=you@example.com   # who may use it: emails, @domain, or *
+```
+Then restart the backend (`docker compose up -d backend`). The backend asks Supabase's admin API for a sign-in token instead of emailing a code. It is off when either setting is missing. Production builds leave it out, the Docker nginx blocks `/api/dev/`, and the backend port is bound to 127.0.0.1, so only this PC can use it.
+
 ### Tests
 ```bash
 cd backend

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { devLogin, getDevLogin } from '../api';
 import { supabase } from '../supabase';
 
 // Supabase allows one code per email every 60 seconds by default.
@@ -17,6 +18,18 @@ function AuthScreen({ invite = null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [cooldown, setCooldown] = useState(0);
+  // Local development only: the backend can sign in with a fixed code and
+  // no email. import.meta.env.DEV is false in production builds, so this
+  // check (and the dev sign-in) is left out of them.
+  const [devCodeState, setDevCode] = useState(null);
+  const devCode = import.meta.env.DEV ? devCodeState : null;
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    getDevLogin()
+      .then((d) => setDevCode(d.enabled ? d.code : null))
+      .catch(() => setDevCode(null));
+  }, []);
 
   useEffect(() => {
     if (cooldown <= 0) return undefined;
@@ -28,6 +41,12 @@ function AuthScreen({ invite = null }) {
     setBusy(true);
     setError(null);
     try {
+      if (import.meta.env.DEV && devCode) {
+        // Dev sign-in: no email; the code is checked when it's entered.
+        setStep('code');
+        setCode('');
+        return;
+      }
       // Creates the account on first sign-in; Supabase emails a one-time code.
       const { error: err } = await supabase.auth.signInWithOtp({
         email: email.trim(),
@@ -48,11 +67,9 @@ function AuthScreen({ invite = null }) {
     setBusy(true);
     setError(null);
     try {
-      const { error: err } = await supabase.auth.verifyOtp({
-        email: email.trim(),
-        token: code.trim(),
-        type: 'email',
-      });
+      const { error: err } = import.meta.env.DEV && devCode
+        ? await supabase.auth.verifyOtp(await devLogin(email.trim(), code.trim()))
+        : await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: 'email' });
       if (err) throw err;
       // onAuthStateChange in Root picks up the new session.
     } catch (err) {
@@ -80,8 +97,16 @@ function AuthScreen({ invite = null }) {
         <p className="mb-6 text-sm text-slate-500">
           {step === 'email'
             ? 'Sign in or create an account with a code sent to your email.'
-            : `Enter the code we sent to ${email.trim()}.`}
+            : devCode
+              ? `Dev sign-in for ${email.trim()}: no email is sent.`
+              : `Enter the code we sent to ${email.trim()}.`}
         </p>
+
+        {devCode && (
+          <div className="-mt-2 mb-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            Local development: sign in with code <span className="font-mono font-semibold">{devCode}</span>.
+          </div>
+        )}
 
         {invite && (
           <div className="-mt-2 mb-5 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
@@ -133,7 +158,7 @@ function AuthScreen({ invite = null }) {
           </button>
         </form>
 
-        {step === 'code' && (
+        {step === 'code' && !devCode && (
           <div className="mt-4 flex items-center justify-between text-sm">
             <button
               type="button"
