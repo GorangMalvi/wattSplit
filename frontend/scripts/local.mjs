@@ -11,7 +11,7 @@
 //   Sign in:  any email, code 123456 (no email at all).
 //
 // Ctrl+C stops the backend and Vite; local Supabase keeps running (and keeps
-// its data). Stop it with: npx supabase stop --workdir ..
+// its data). Stop it with: npx supabase@2.120.0 stop --workdir ..
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { connect } from 'node:net';
@@ -33,6 +33,9 @@ const API_PORT = 8001; // not 8000: docker compose's backend (live settings) use
 // With shell: true (needed for npx on Windows) arguments are joined into one
 // command line, so the folder (it has spaces) must be quoted.
 const workdir = win ? `"${repo}"` : repo;
+// Fetched by npx when needed, not a dependency: npm install (and the live
+// site's build) shouldn't download the Supabase CLI.
+const SUPABASE_CLI = 'supabase@2.120.0';
 
 const fail = (message) => {
   console.error(`\n✗ ${message}`);
@@ -57,7 +60,7 @@ const waitForPort = async (port, seconds) => {
 };
 
 const supabase = (...args) =>
-  spawnSync('npx', ['supabase', ...args, '--workdir', workdir], { cwd: frontend, shell: win, encoding: 'utf-8' });
+  spawnSync('npx', ['--yes', SUPABASE_CLI, ...args, '--workdir', workdir], { cwd: frontend, shell: win, encoding: 'utf-8' });
 
 for (const port of [WEB_PORT, API_PORT]) {
   if (!(await portOpen(port))) continue;
@@ -72,7 +75,7 @@ for (const port of [WEB_PORT, API_PORT]) {
 
 // 1. Local Supabase (the first start downloads its Docker images).
 console.log('Starting local Supabase…');
-const started = spawnSync('npx', ['supabase', 'start', '--workdir', workdir], {
+const started = spawnSync('npx', ['--yes', SUPABASE_CLI, 'start', '--workdir', workdir], {
   cwd: frontend,
   shell: win,
   stdio: ['ignore', 'ignore', 'inherit'],
