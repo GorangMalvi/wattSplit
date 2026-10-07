@@ -64,3 +64,36 @@ def test_next_month_starts_from_last_months_end_readings():
     assert {n: r["sub_units"] for n, r in rows.items()} == {"A": 134, "B": 328, "C": 269, "D": 400}
     s = calc.calculate_month("2026-06", household(june, june_readings))["summary"]
     assert s["main_units"] == 1158 and s["common_units"] == pytest.approx(1158 - 1131)
+
+
+# June 2026 (104_aims_boys): sub-meters read days after the main meter's report,
+# so they show 1,415 units against the main meter's 1,258.
+JUNE = MAY + [month("2026-06", 28742, 30000, 10671)]
+JUNE_READINGS = MAY_READINGS + [
+    reading("2026-06", "A", 2045),
+    reading("2026-06", "B", 3538),
+    reading("2026-06", "C", 3467),
+    reading("2026-06", "D", 4984),
+]
+
+
+def test_sub_meters_above_main_split_the_real_bill_by_own_units():
+    result = calc.calculate_month("2026-06", household(JUNE, JUNE_READINGS))
+    s = result["summary"]
+    assert s["main_units"] == 1258 and s["sub_units_total"] == 1415
+    assert s["units_mismatch"] == 157
+    assert s["common_units"] == 0 and s["common_share"] == 0
+    assert s["rate_per_unit"] == pytest.approx(10671 / 1415)  # not 10671 / 1258
+    bills = {r["name"]: round(r["total_bill"], 2) for r in result["roommates"]}
+    assert bills == {"A": 1349.90, "B": 2760.13, "C": 1402.69, "D": 5158.28}
+    assert sum(r["total_bill"] for r in result["roommates"]) == pytest.approx(10671)
+
+
+def test_no_mismatch_reported_when_sub_meters_fit():
+    assert calc.calculate_month("2026-05", household(MAY, MAY_READINGS))["summary"]["units_mismatch"] == 0
+
+
+def test_missing_main_readings_still_bill_the_whole_amount():
+    no_main = [month("2026-05", 27485, 27485, 9628)]  # end reading not entered yet
+    result = calc.calculate_month("2026-05", household(no_main, MAY_READINGS))
+    assert sum(r["total_bill"] for r in result["roommates"]) == pytest.approx(9628)

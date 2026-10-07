@@ -555,6 +555,16 @@ function App() {
               </div>
             ) : (
               <>
+                {summary.units_mismatch > 0 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    Roommates&apos; meters show{' '}
+                    <span className="font-semibold">{formatNumber(summary.units_mismatch)} more units</span> than the
+                    main meter, so the readings were probably taken on different dates. This month&apos;s bill is
+                    split by each roommate&apos;s own units, so it still adds up to {formatMoney(summary.total_bill)};
+                    the extra days are billed next month.
+                  </div>
+                )}
+
                 {/* Summary Cards */}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
                   <SummaryCard
@@ -571,13 +581,15 @@ function App() {
                     subtext={
                       summary.common_units == null
                         ? 'Main units − roommates’ units, once readings are in'
-                        : `${formatNumber(summary.main_units)} main − ${formatNumber(summary.sub_units_total)} roommates · ${formatNumber(summary.common_share)} each (${summary.active_roommates} people)`
+                        : summary.units_mismatch > 0
+                          ? `None: roommates ${formatNumber(summary.sub_units_total)} > main ${formatNumber(summary.main_units)}`
+                          : `${formatNumber(summary.main_units)} main − ${formatNumber(summary.sub_units_total)} roommates · ${formatNumber(summary.common_share)} each (${summary.active_roommates} people)`
                     }
                   />
                   <SummaryCard
                     label="Rate per Unit"
                     value={formatMoney(summary.rate_per_unit)}
-                    subtext="Monthly bill ÷ main units"
+                    subtext={summary.units_mismatch > 0 ? 'Monthly bill ÷ roommates’ units' : 'Monthly bill ÷ main units'}
                   />
                   <SummaryCard
                     label="Total Bill"

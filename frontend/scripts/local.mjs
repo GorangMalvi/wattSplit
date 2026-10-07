@@ -126,7 +126,14 @@ const start = (name, cmd, args, opts) => {
   });
   children.push(child);
 };
-start('Backend', 'python', ['-m', 'uvicorn', 'app.main:app', '--reload', '--host', '127.0.0.1', '--port', String(API_PORT)], {
+// Restarted on every .py change by watchfiles (installed with uvicorn[standard])
+// rather than uvicorn --reload, whose restart can hang on Windows and leave the
+// old code running.
+start('Backend', 'python', [
+  '-m', 'watchfiles', '--filter', 'python', '--sigint-timeout', '3',
+  `python -m uvicorn app.main:app --host 127.0.0.1 --port ${API_PORT}`,
+  'app',
+], {
   cwd: backendDir,
   env: backendEnv,
 });

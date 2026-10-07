@@ -252,6 +252,9 @@ class CalculationSummary(BaseModel):
     common_units: Optional[float] = None
     common_share: Optional[float] = None
     active_roommates: Optional[int] = None
+    # Sub-meters showing more units than the main meter (readings taken on
+    # different dates): the bill is then split by own units, rate = bill / those.
+    units_mismatch: Optional[float] = None
 
 
 class MonthCalculation(BaseModel):
