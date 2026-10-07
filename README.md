@@ -88,6 +88,23 @@ npm run apk
 ```
 The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Copy it to the phone and open it (allow "install unknown apps" for the file manager / browser you open it with).
 
+### 3. Develop on a phone or emulator (live reload)
+No push or release needed: the app on the device loads the Vite dev server on this PC, and saved changes show up straight away.
+
+1. Start the local backend: `docker compose up -d backend`, or `cd backend && uvicorn app.main:app --reload --port 8000`.
+2. Start an emulator (Android Studio > Device Manager > ▶), or plug in a phone with USB debugging on.
+3. Run:
+   ```bash
+   cd frontend
+   npm run android:dev                 # build + install "wattSplit Dev", launch it, start Vite
+   npm run android:dev -- --no-install # later runs, when only web code changed
+   ```
+- It installs **wattSplit Dev** (app id `com.gorangmalvi.wattsplit.dev`), a debug build that sits next to the real app instead of replacing it. Sign in to it once.
+- `adb reverse` maps the device's `localhost:5173` to this PC, so it works the same on an emulator and on a USB phone. The microphone works too, because `localhost` counts as a secure page.
+- Console, network and errors: open `chrome://inspect` in Chrome on the PC.
+- Run it again without `--no-install` after native changes: Capacitor plugins, `AndroidManifest.xml` or `build.gradle`.
+- Release builds (`npm run apk:release`) re-sync the config, so they never point at the dev server.
+
 ## Public web app and invites (wattsplit.jugadu.tech)
 
 Invite links and emails to flatmates need a public web address and a verified sending domain.

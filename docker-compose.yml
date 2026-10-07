@@ -17,6 +17,8 @@ services:
       - MAIL_FROM_NAME=${MAIL_FROM_NAME:-wattSplit}
       # Public web address for roommate invite links (default: the page the owner uses)
       - APP_URL=${APP_URL:-}
+      # Voice payments (60db speech-to-text); empty hides the mic button
+      - SIXTYDB_API_KEY=${SIXTYDB_API_KEY:-}
     networks:
       - electricity-net
     restart: unless-stopped

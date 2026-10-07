@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Debug builds only: the launcher name of the "wattSplit Dev" app. -->
+<resources>
+    <string name="app_name">wattSplit Dev</string>
+    <string name="title_activity_main">wattSplit Dev</string>
+</resources>

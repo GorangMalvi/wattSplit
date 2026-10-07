@@ -10,7 +10,8 @@
     "apk": "npm run build:android && cd android && gradlew assembleDebug",
     "lint": "oxlint",
     "preview": "vite preview",
-    "apk:release": "npm run build:android && cd android && gradlew assembleRelease"
+    "apk:release": "npm run build:android && cd android && gradlew assembleRelease",
+    "android:dev": "node scripts/android-dev.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.6.9",

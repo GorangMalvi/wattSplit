@@ -45,6 +45,12 @@ android {
         }
     }
     buildTypes {
+        // Development builds install next to the real app as "wattSplit Dev"
+        // (own app id, own sign-in), so they never replace it on a phone.
+        debug {
+            applicationIdSuffix ".dev"
+            versionNameSuffix "-dev"
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
