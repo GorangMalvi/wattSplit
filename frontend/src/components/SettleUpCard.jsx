@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createSettlement, deleteSettlement, getSettleUp } from '../api';
-import { formatMoney, today } from '../format';
+import { formatMoney, formatMonth, today } from '../format';
 import ErrorAlert from './ErrorAlert';
 
 // Who pays whom so that every balance reaches zero. Electricity nobody has
@@ -66,24 +66,55 @@ function SettleUpCard({ refreshKey, canRecord, onChanged }) {
     <div className="card">
       <h2 className="text-lg font-semibold text-slate-900">Settle up</h2>
       <p className="mb-4 mt-1 text-sm text-slate-500">
-        Pay each other back so that everyone ends up even.
+        Pay each other back so that everyone ends up even
+        {plan.through_month ? `, for the bills up to ${formatMonth(plan.through_month)}` : ''}.
+        {plan.meter_balance > 0 && (
+          <>
+            {' '}
+            The {formatMoney(plan.meter_balance)} still in the meter is prepaid electricity, so it stays as credit
+            for whoever paid it in.
+          </>
+        )}
+        {plan.later_payments_total > 0 && (
+          <>
+            {' '}
+            {formatMoney(plan.later_payments_total)} paid since then is for a month not billed yet; it&apos;s
+            settled once that month is billed.
+          </>
+        )}
       </p>
       {error && <ErrorAlert message={error} />}
+
+      {plan.future_payments.length > 0 && (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          These payments are dated after today, so the date is probably wrong. Check them under Recharges /
+          Payments:
+          <ul className="mt-1 list-disc pl-5">
+            {plan.future_payments.map((p) => (
+              <li key={p.id}>
+                {p.roommate} {formatMoney(p.amount)}
+                {p.meter === 'dg' ? ' (DG)' : ''} on {p.date}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {Math.abs(plan.unpaid_total) >= 0.01 && (
         <p className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
           {plan.unpaid_total > 0 ? (
             <>
               <span className="font-medium">{formatMoney(plan.unpaid_total)}</span> of electricity has no
-              recorded payment (the meter&apos;s starting balance, or recharges not entered in the app). It&apos;s
-              shared equally, <span className="font-medium">{formatMoney(plan.unpaid_each)}</span> each, and
-              included below.
+              recorded payment (recharges not entered in the app, or a mistake in the month&apos;s meter
+              figures). It&apos;s shared equally, <span className="font-medium">{formatMoney(plan.unpaid_each)}</span>{' '}
+              each, and included below.
             </>
           ) : (
             <>
               Recorded payments are <span className="font-medium">{formatMoney(-plan.unpaid_total)}</span> more
-              than the bills so far (credit left in the meter). It&apos;s shared equally,{' '}
-              <span className="font-medium">{formatMoney(-plan.unpaid_each)}</span> each, and included below.
+              than the bills plus what&apos;s in the meter (a payment entered twice, or in the wrong month?).
+              It&apos;s shared equally, <span className="font-medium">{formatMoney(-plan.unpaid_each)}</span> each,
+              and included below.
             </>
           )}
         </p>

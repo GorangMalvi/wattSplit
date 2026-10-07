@@ -243,6 +243,8 @@ class RunningBalance(BaseModel):
     dg_recharges_cumulative: float
     dg_balance: float
     settled_cumulative: float = 0.0  # paid to (+) / received from (-) roommates
+    units_cumulative: float = 0.0  # units billed: own meter + share of common
+    own_units_cumulative: float = 0.0
 
 
 class CalculationSummary(BaseModel):
@@ -353,6 +355,8 @@ class Dashboard(BaseModel):
     dg_recharges_cumulative: float
     dg_balance: float
     settled_cumulative: float = 0.0
+    units_cumulative: float = 0.0
+    own_units_cumulative: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +391,26 @@ class Transfer(BaseModel):
     amount: float
 
 
+class FuturePayment(BaseModel):
+    id: int
+    date: str
+    roommate: str
+    amount: float
+    meter: str
+
+
 class SettleUp(BaseModel):
-    """Payments that bring every balance to zero, and the settlements recorded so far."""
+    """Payments that leave everyone even, as of the last billed month, and the settlements recorded so far."""
     transfers: List[Transfer]
-    # Electricity nobody has recorded paying for, shared equally in the transfers.
+    # Electricity nobody has recorded paying for, shared equally in the transfers
+    # (0 when every payment is recorded).
     unpaid_total: float
     unpaid_each: float
+    # Left in the meter after through_month: prepaid, so it stays as credit.
+    meter_balance: float = 0.0
+    through_month: Optional[str] = None
+    # Paid after through_month, for a month not billed yet: not settled now.
+    later_payments_total: float = 0.0
+    # Dated after today: probably a wrong date.
+    future_payments: List[FuturePayment] = []
     settlements: List[SettlementOut]

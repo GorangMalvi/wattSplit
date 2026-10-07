@@ -29,6 +29,7 @@ import MeterBalanceFields from './components/MeterBalanceFields';
 import RoommatesTable from './components/RoommatesTable';
 import SettleUpCard from './components/SettleUpCard';
 import SummaryCard from './components/SummaryCard';
+import TotalsTable from './components/TotalsTable';
 import ReadingsTable from './components/ReadingsTable';
 import RechargesTable from './components/RechargesTable';
 import BillSplitTable from './components/BillSplitTable';
@@ -760,6 +761,15 @@ function App() {
                     readOnly={!isOwner}
                     loading={saving}
                   />
+                </div>
+
+                {/* Everything so far, per roommate */}
+                <div className="card">
+                  <h2 className="mb-1 text-lg font-semibold text-slate-900">Totals to date</h2>
+                  <p className="mb-4 text-sm text-slate-500">
+                    What each roommate has recharged, the units they used and what&apos;s left, across all months.
+                  </p>
+                  <TotalsTable balances={history} months={months} />
                 </div>
 
                 {/* Balances */}

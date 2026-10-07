@@ -611,7 +611,7 @@ def _require_settlement_party(member: Member, from_id: int, to_id: int) -> None:
 def settle_up(hid: HouseholdId):
     """Who pays whom to bring every balance to zero, and what's been recorded."""
     data = db.HouseholdData(hid)
-    return {**calc.settle_up(calc.household_balances(data)), "settlements": data.settlement_rows}
+    return {**calc.household_settle_up(data, today=date.today().isoformat()), "settlements": data.settlement_rows}
 
 
 @app.post("/api/settlements", response_model=SettlementOut, status_code=201)

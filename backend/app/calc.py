@@ -250,17 +250,20 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
     return summary, split_rows
 
 
-def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Dict[str, Any]]:
+def running_balances(data: HouseholdData, upto: Optional[str] = None,
+                     all_settlements: bool = False) -> List[Dict[str, Any]]:
     """
-    Cumulative bill, payments and balance per roommate: the sum of every
+    Cumulative bill, units, payments and balance per roommate: the sum of every
     month's split up to ``upto`` (YYYY-MM) and every recharge dated on or
     before the end of that month. ``upto=None`` means all months and all
-    recharges so far.
+    recharges so far. ``all_settlements`` counts every recorded settle-up
+    payment whatever its date (settling up happens after the bills).
     """
     totals: Dict[str, Dict[str, float]] = {}
 
     def entry(name: str) -> Dict[str, float]:
-        return totals.setdefault(name, {"main_bill": 0.0, "dg_bill": 0.0, "main": 0.0, "dg": 0.0, "settled": 0.0})
+        return totals.setdefault(name, {"main_bill": 0.0, "dg_bill": 0.0, "main": 0.0, "dg": 0.0, "settled": 0.0,
+                                        "units": 0.0, "own_units": 0.0})
 
     for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
         if upto is not None and m > upto:
@@ -273,6 +276,8 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
             e = entry(row["roommate"])
             e["main_bill"] += row["energy_charge"]
             e["dg_bill"] += row["dg_share"]
+            e["units"] += row["total_units"]
+            e["own_units"] += row["sub_units"]
 
     last_day = _month_end_date(upto) if upto is not None else None
     for _, rec in data.get_recharges().iterrows():
@@ -286,7 +291,7 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
     # has been repaid it. Counted against the main meter (balances by meter
     # still add up to the total).
     for s in getattr(data, "settlement_rows", []):
-        if last_day is not None and s["date"] > last_day:
+        if last_day is not None and not all_settlements and s["date"] > last_day:
             continue
         amount = float(s["amount"])
         entry(s["from_roommate"])["settled"] += amount
@@ -306,6 +311,9 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
             "total_recharges_cumulative": recharges,
             # Paid to (+) or received from (-) other roommates when settling up.
             "settled_cumulative": settled,
+            # Units billed (own meter + share of common) and own meter alone.
+            "units_cumulative": round(t["units"], 2),
+            "own_units_cumulative": round(t["own_units"], 2),
             "balance": round(total_bill - recharges - settled, 2),
             "main_bill_cumulative": main_bill,
             "main_recharges_cumulative": main_paid,
@@ -366,21 +374,24 @@ def calculate_month(month: str, data: HouseholdData) -> Dict[str, Any]:
     }
 
 
-def settle_up(balances: List[Dict[str, Any]]) -> Dict[str, Any]:
+def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0) -> Dict[str, Any]:
     """
     Who pays whom so that every balance ends at zero.
 
     ``balances``: household_balances rows (``roommate_id``, ``name``,
-    ``balance``; positive = owes). They needn't add up to zero: electricity
-    nobody has recorded paying for (the meter's starting balance, recharges
-    not entered in the app) leaves a gap. The gap is shared equally, then the
-    fewest payments are found by matching the biggest debtor with the biggest
-    creditor until all are settled.
+    ``balance``; positive = owes). With every payment recorded, they add up
+    to minus ``meter_balance``: money still in the meter is prepaid
+    electricity, and stays as credit for whoever paid it in. Anything beyond
+    that is a gap (the meter's starting balance, recharges not entered in the
+    app), shared equally. Then the biggest debtor pays the biggest creditor
+    until nobody owes, which takes the fewest payments.
     """
     people = [b for b in balances if b.get("roommate_id") is not None]
     if not people:
-        return {"transfers": [], "unpaid_total": 0.0, "unpaid_each": 0.0}
-    gap = round(sum(b["balance"] for b in people), 2)
+        return {"transfers": [], "unpaid_total": 0.0, "unpaid_each": 0.0, "meter_balance": round(meter_balance, 2)}
+    gap = round(sum(b["balance"] for b in people) + meter_balance, 2)
+    if abs(gap) <= 0.01 * len(people):
+        gap = 0.0  # each balance is rounded to paise: up to a paisa each is rounding, not a gap
     each = gap / len(people)
     owes = {b["roommate_id"]: b["balance"] - each for b in people}
     names = {b["roommate_id"]: b["name"] for b in people}
@@ -399,13 +410,50 @@ def settle_up(balances: List[Dict[str, Any]]) -> Dict[str, Any]:
         })
         owes[debtor] -= amount
         owes[creditor] += amount
-    return {"transfers": transfers, "unpaid_total": gap, "unpaid_each": round(each, 2)}
+    return {"transfers": transfers, "unpaid_total": gap, "unpaid_each": round(each, 2),
+            "meter_balance": round(meter_balance, 2)}
 
 
-def household_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Dict[str, Any]]:
+def household_settle_up(data: HouseholdData, today: str) -> Dict[str, Any]:
+    """
+    settle_up for the household as of the last billed month: its bills, the
+    payments up to its end, every settle-up payment, and what was left in the
+    meter then (its closing balance). Payments after that month are for a
+    month not billed yet, so they wait; ones dated after ``today`` are listed
+    as likely date mistakes.
+    """
+    billed = []
+    for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
+        try:
+            _split_month(m, data)
+            billed.append(m)
+        except ValueError:
+            pass
+    last = billed[-1] if billed else None
+    meter_balance = 0.0
+    if last is not None:
+        closing = data.get_month(last)["meter_closing_balance"]
+        meter_balance = float(closing) if closing is not None and pd.notna(closing) else 0.0
+    balances = (household_balances(data, upto=last, all_settlements=True) if last is not None else [])
+    plan = settle_up(balances, meter_balance)
+
+    later = [r for r in data.recharge_rows if last is not None and r["date"] > _month_end_date(last)]
+    return {
+        **plan,
+        "through_month": last,
+        "later_payments_total": round(sum(float(r["amount"]) for r in later), 2),
+        "future_payments": [
+            {"id": r["id"], "date": r["date"], "roommate": r["roommate"], "amount": r["amount"], "meter": r.get("meter") or "main"}
+            for r in data.recharge_rows if r["date"] > today
+        ],
+    }
+
+
+def household_balances(data: HouseholdData, upto: Optional[str] = None,
+                       all_settlements: bool = False) -> List[Dict[str, Any]]:
     """``running_balances`` shaped for the frontend (``RunningBalance`` in models.py)."""
     shaped = []
-    for b in running_balances(data, upto):
+    for b in running_balances(data, upto, all_settlements):
         rid = data.get_roommate_id_by_name(b["roommate"])
         if rid is None:
             # Skip non-roommate entries such as "DG".
@@ -491,5 +539,5 @@ TOTAL_KEYS = [
     "total_bill_cumulative", "total_recharges_cumulative", "balance",
     "main_bill_cumulative", "main_recharges_cumulative", "main_balance",
     "dg_bill_cumulative", "dg_recharges_cumulative", "dg_balance",
-    "settled_cumulative",
+    "settled_cumulative", "units_cumulative", "own_units_cumulative",
 ]
