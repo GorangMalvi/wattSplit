@@ -38,7 +38,8 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': {
-          target: 'http://127.0.0.1:8000',
+          // npm run local points this at its own backend (API_PROXY_TARGET).
+          target: env.API_PROXY_TARGET || 'http://127.0.0.1:8000',
           changeOrigin: true,
         },
       },

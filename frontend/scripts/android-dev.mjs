@@ -1,20 +1,18 @@
-// npm run android:dev: the app on a connected phone or emulator, loading the
-// Vite dev server on this PC, so saved changes show up on the device straight
-// away (no push, no APK release).
+// The "wattSplit Dev" app on a connected emulator or phone, live from the Vite
+// dev server that `npm run local` runs (it calls this script itself).
 //
 // It installs "wattSplit Dev" (a debug build with its own app id, so the real
-// wattSplit stays installed), points it at http://localhost:5180, maps the
-// device's localhost:5180 to this PC with `adb reverse`, launches it, and
-// starts Vite. API calls go through Vite's /api proxy to the local backend on
-// :8000, so that has to be running too (docker compose up -d backend, or
-// uvicorn).
+// wattSplit stays installed) pointed at http://localhost:5180, maps the
+// device's localhost:5180 (Vite) and :54321 (local Supabase) to this PC with
+// `adb reverse`, and opens it.
 //
-//   npm run android:dev                  build, install, launch, start Vite
-//   npm run android:dev -- --no-install  skip the build (only web code changed)
-//
-// Rebuild (the default) after native changes: Capacitor plugins, the manifest,
-// build.gradle.
-import { spawn, spawnSync } from 'node:child_process';
+//   npm run android:dev                  rebuild + reinstall, then open (after
+//                                        native changes: plugins, manifest, gradle)
+//   npm run android:dev -- --no-install  just open it again
+//   --if-device                          (used by npm run local) quietly do
+//                                        nothing without a device; install only
+//                                        if the app is missing
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
@@ -23,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 // Not 5173: docker-compose publishes the built web app there.
 const PORT = 5180;
+const SUPABASE_PORT = 54321; // local Supabase (supabase/config.toml)
 const APP_ID = 'com.gorangmalvi.wattsplit.dev';
 const win = process.platform === 'win32';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,7 +31,7 @@ const sdk =
   process.env.ANDROID_SDK_ROOT ||
   join(homedir(), win ? 'AppData/Local/Android/Sdk' : 'Android/Sdk');
 const adb = join(sdk, 'platform-tools', win ? 'adb.exe' : 'adb');
-const install = !process.argv.includes('--no-install');
+const ifDevice = process.argv.includes('--if-device');
 
 const fail = (message) => {
   console.error(`\n✗ ${message}`);
@@ -58,28 +57,41 @@ const portOpen = (port) =>
 // Something on the port, and is it Vite? (Vite serves its client script.)
 const isVite = async (port) => {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/@vite/client`);
-    return res.ok;
+    return (await fetch(`http://127.0.0.1:${port}/@vite/client`)).ok;
   } catch {
     return false;
   }
 };
 
 // 1. A device to run on.
-if (!existsSync(adb)) fail(`adb not found at ${adb}. Set ANDROID_HOME to your Android SDK.`);
+if (!existsSync(adb)) {
+  if (ifDevice) process.exit(2);
+  fail(`adb not found at ${adb}. Set ANDROID_HOME to your Android SDK.`);
+}
 const devices = adbOut('devices')
   .split('\n')
   .slice(1)
   .filter((line) => line.trim().endsWith('\tdevice'));
 if (devices.length === 0) {
+  if (ifDevice) process.exit(2);
   fail('No phone or emulator connected. Start the emulator (Android Studio > Device Manager > ▶) or plug in a phone with USB debugging on.');
 }
 if (devices.length > 1) console.log(`Several devices connected; using ${devices[0].split('\t')[0]}.`);
 const serial = devices[0].split('\t')[0];
 
+if (!(await isVite(PORT))) fail(`Nothing is serving the app on port ${PORT}. Run "npm run local" first.`);
+
 // 2. Build and install the dev app, pointed at the dev server.
+const installed = adbOut('-s', serial, 'shell', 'pm', 'list', 'packages', APP_ID).includes(`package:${APP_ID}`);
+const install = ifDevice ? !installed : !process.argv.includes('--no-install');
 if (install) {
-  if (!process.env.JAVA_HOME) fail('JAVA_HOME is not set (it should point to JDK 21).');
+  if (!process.env.JAVA_HOME) {
+    // Android Studio ships a JDK; use it when JAVA_HOME isn't set.
+    const studioJdk = 'C:\\Program Files\\Android\\Android Studio\\jbr';
+    if (win && existsSync(studioJdk)) process.env.JAVA_HOME = studioJdk;
+    else fail('JAVA_HOME is not set (it should point to JDK 21).');
+  }
+  process.env.ANDROID_HOME ||= sdk;
   if (!existsSync(join(root, 'dist', 'index.html'))) run('npx', ['vite', 'build'], { cwd: root });
   run('npx', ['cap', 'sync', 'android'], { cwd: root });
 
@@ -100,35 +112,20 @@ if (install) {
   run(adb, ['-s', serial, 'install', '-r', apk], { shell: false });
 }
 
-// 3. The device's localhost:5180 -> this PC's Vite (works for emulators and USB phones).
-run(adb, ['-s', serial, 'reverse', `tcp:${PORT}`, `tcp:${PORT}`], { shell: false });
-
-if (!(await portOpen(8000))) {
-  console.warn(
-    '\n⚠ No backend on http://127.0.0.1:8000, so the app will show API errors. Start it with:\n' +
-      '    docker compose up -d backend\n' +
-      '  or: cd backend && uvicorn app.main:app --reload --port 8000\n'
-  );
+// 3. The device's localhost:5180 (Vite) and :54321 (local Supabase sign-in)
+// -> this PC. Works the same for emulators and USB phones.
+for (const port of [PORT, SUPABASE_PORT]) {
+  run(adb, ['-s', serial, 'reverse', `tcp:${port}`, `tcp:${port}`], { shell: false, stdio: 'ignore' });
 }
 
-// 4. Vite (unless it's already running), then open the app.
-const viteRunning = await portOpen(PORT);
-if (viteRunning && !(await isVite(PORT))) {
-  fail(`Port ${PORT} is in use by something other than Vite. Stop it, or change PORT in scripts/android-dev.mjs.`);
-}
-const vite = viteRunning
-  ? null
-  : spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], { cwd: root, stdio: 'inherit', shell: win });
-if (vite) {
-  for (let i = 0; i < 60 && !(await portOpen(PORT)); i++) await new Promise((r) => setTimeout(r, 500));
-}
+// 4. Open it (restarted, so it loads the current code).
 spawnSync(adb, ['-s', serial, 'shell', 'am', 'force-stop', APP_ID]);
 spawnSync(adb, ['-s', serial, 'shell', 'monkey', '-p', APP_ID, '-c', 'android.intent.category.LAUNCHER', '1'], {
   stdio: 'ignore',
 });
-console.log(
-  `\n✓ wattSplit Dev is open on ${serial}, live from http://localhost:${PORT}. Save a file and it updates on the device.` +
-    '\n  Console and errors: open chrome://inspect in Chrome on this PC.' +
-    (vite ? '\n  Ctrl+C stops Vite.' : '\n  (Vite was already running.)')
-);
-if (vite) vite.on('exit', (code) => process.exit(code ?? 0));
+if (!ifDevice) {
+  console.log(
+    `\n✓ wattSplit Dev is open on ${serial}, live from http://localhost:${PORT}.` +
+      '\n  Console and errors: open chrome://inspect in Chrome on this PC.'
+  );
+}
