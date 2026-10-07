@@ -49,6 +49,9 @@ from .models import (
     RoommateCreate,
     RoommateOut,
     RunningBalance,
+    SettlementCreate,
+    SettlementOut,
+    SettleUp,
     VoicePaymentDraft,
     DevLogin,
     DevLoginStatus,
@@ -553,6 +556,54 @@ def delete_recharge(recharge_id: int, member: CurrentMember):
     _require_editable_recharge(member, recharge_id)
     if not db.delete_recharge(member.hid, recharge_id):
         raise HTTPException(status_code=404, detail="Recharge not found")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Settling up (roommates paying each other back)
+# ---------------------------------------------------------------------------
+def _require_settlement_party(member: Member, from_id: int, to_id: int) -> None:
+    """The owner may record any settlement; others only ones they pay or receive."""
+    if member.is_owner:
+        _require_roommate(member.hid, from_id)
+        _require_roommate(member.hid, to_id)
+    elif member.roommate_id not in (from_id, to_id):
+        raise HTTPException(status_code=403, detail="You can only record payments you made or received")
+    else:
+        _require_roommate(member.hid, from_id)
+        _require_roommate(member.hid, to_id)
+
+
+@app.get("/api/settle-up", response_model=SettleUp)
+def settle_up(hid: HouseholdId):
+    """Who pays whom to bring every balance to zero, and what's been recorded."""
+    data = db.HouseholdData(hid)
+    return {**calc.settle_up(calc.household_balances(data)), "settlements": data.settlement_rows}
+
+
+@app.post("/api/settlements", response_model=SettlementOut, status_code=201)
+def create_settlement(payload: SettlementCreate, member: CurrentMember):
+    if payload.from_roommate_id == payload.to_roommate_id:
+        raise HTTPException(status_code=422, detail="Choose two different roommates")
+    _require_settlement_party(member, payload.from_roommate_id, payload.to_roommate_id)
+    return db.add_settlement(
+        member.hid,
+        date=(payload.settlement_date or date.today()).isoformat(),
+        from_roommate_id=payload.from_roommate_id,
+        to_roommate_id=payload.to_roommate_id,
+        amount=payload.amount,
+        notes=payload.notes or "",
+        created_by=member.user_id,
+    )
+
+
+@app.delete("/api/settlements/{settlement_id}", status_code=204)
+def delete_settlement(settlement_id: int, member: CurrentMember):
+    existing = db.get_settlement(member.hid, settlement_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    _require_settlement_party(member, existing["from_roommate_id"], existing["to_roommate_id"])
+    db.delete_settlement(member.hid, settlement_id)
     return None
 
 

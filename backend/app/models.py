@@ -239,6 +239,7 @@ class RunningBalance(BaseModel):
     dg_bill_cumulative: float
     dg_recharges_cumulative: float
     dg_balance: float
+    settled_cumulative: float = 0.0  # paid to (+) / received from (-) roommates
 
 
 class CalculationSummary(BaseModel):
@@ -347,3 +348,45 @@ class Dashboard(BaseModel):
     dg_bill_cumulative: float
     dg_recharges_cumulative: float
     dg_balance: float
+    settled_cumulative: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Settling up between roommates
+# ---------------------------------------------------------------------------
+class SettlementCreate(BaseModel):
+    from_roommate_id: int
+    to_roommate_id: int
+    amount: float = Field(..., gt=0)
+    settlement_date: Optional[date] = Field(None, alias="date")
+    notes: Optional[str] = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class SettlementOut(BaseModel):
+    id: int
+    date: str
+    from_roommate_id: int
+    from_roommate: str
+    to_roommate_id: int
+    to_roommate: str
+    amount: float
+    notes: str
+
+
+class Transfer(BaseModel):
+    from_roommate_id: int
+    from_roommate: str
+    to_roommate_id: int
+    to_roommate: str
+    amount: float
+
+
+class SettleUp(BaseModel):
+    """Payments that bring every balance to zero, and the settlements recorded so far."""
+    transfers: List[Transfer]
+    # Electricity nobody has recorded paying for, shared equally in the transfers.
+    unpaid_total: float
+    unpaid_each: float
+    settlements: List[SettlementOut]
