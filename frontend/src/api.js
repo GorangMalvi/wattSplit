@@ -68,6 +68,13 @@ export const getMonth = (month) => api.get(`/months/${month}`).then((res) => res
 
 export const createMonth = (payload) => api.post('/months', payload).then((res) => res.data);
 
+// Owner: delete a month and its meter readings (payments stay: they're by date).
+export const deleteMonth = (month) => api.delete(`/months/${month}`);
+
+// Owner: delete the active household and everything in it. confirmName: its name, typed.
+export const deleteHousehold = (confirmName) =>
+  api.delete('/household', { params: { confirm_name: confirmName } });
+
 export const updateMonth = (month, payload) =>
   api.put(`/months/${month}`, payload).then((res) => res.data);
 

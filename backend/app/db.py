@@ -158,6 +158,15 @@ def join_household(user_id: str, invite_code: str) -> Optional[Dict[str, Any]]:
     return {**household, "role": role}
 
 
+def get_household(hid: UUID) -> Optional[Dict[str, Any]]:
+    return _fetch_one("SELECT id, name, invite_code FROM households WHERE id = %s", (hid,))
+
+
+def delete_household(hid: UUID) -> bool:
+    """Delete the household and everything in it (the tables cascade)."""
+    return _execute("DELETE FROM households WHERE id = %s", (hid,)) > 0
+
+
 def get_membership(user_id: str, household_id: UUID) -> Optional[Dict[str, Any]]:
     """
     ``{"role": "owner" | "member", "roommate_id": int | None}`` (the roommate
@@ -359,6 +368,12 @@ def update_month(hid: UUID, month: str, **kwargs) -> Optional[Dict[str, Any]]:
             """,
             (*updates.values(), hid, month),
         ).fetchone()
+
+
+def delete_month(hid: UUID, month: str) -> bool:
+    """Delete the month and its meter readings (they cascade). Payments are kept:
+    they belong to dates, not to months."""
+    return _execute("DELETE FROM months WHERE household_id = %s AND month = %s", (hid, month)) > 0
 
 
 def import_meter_months(hid: UUID, months: List[Dict[str, Any]]) -> None:

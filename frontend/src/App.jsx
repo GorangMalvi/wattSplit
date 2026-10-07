@@ -12,6 +12,8 @@ import {
   getRecharges,
   createRecharge,
   updateRecharge,
+  deleteHousehold,
+  deleteMonth,
   deleteRecharge,
   updateReading,
   downloadExport,
@@ -21,7 +23,7 @@ import {
   inviteRoommate,
   revokeInvite,
 } from './api';
-import { formatMoney, formatNumber, meterBill } from './format';
+import { formatMoney, formatMonth, formatNumber, meterBill } from './format';
 import MonthSelector from './components/MonthSelector';
 import NewMonthForm from './components/NewMonthForm';
 import MeterReportImport from './components/MeterReportImport';
@@ -66,7 +68,59 @@ function storeView(view) {
   }
 }
 
-function App() {
+// Owner only: delete the whole household, after typing its name.
+function DeleteHouseholdCard({ household, onDeleted }) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const matches = name.trim() === household.name.trim();
+
+  const remove = async (e) => {
+    e.preventDefault();
+    if (!matches) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteHousehold(name.trim());
+      onDeleted();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card border-rose-200">
+      <h2 className="text-lg font-semibold text-rose-700">Delete household</h2>
+      <p className="mb-4 mt-1 text-sm text-slate-600">
+        Deletes <span className="font-semibold">{household.name}</span> for everyone: all its months, meter
+        readings, payments, roommates and members. This can&apos;t be undone.
+      </p>
+      {error && <ErrorAlert message={error} />}
+      <form onSubmit={remove} className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="delete-household-name" className="text-xs font-medium text-slate-500">
+            Type the household name to confirm
+          </label>
+          <input
+            id="delete-household-name"
+            placeholder={household.name}
+            autoComplete="off"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <button type="submit" disabled={!matches || busy} className="btn-danger">
+          {busy ? 'Deleting…' : 'Delete household'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// household: the active household ({ id, name, … }); onHouseholdDeleted: after
+// the owner deletes it (Root then switches to another one).
+function App({ household, onHouseholdDeleted }) {
   const [months, setMonths] = useState([]);
   const [roommates, setRoommates] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState('');
@@ -286,6 +340,25 @@ function App() {
     }
   };
 
+  const [confirmDeleteMonth, setConfirmDeleteMonth] = useState(false);
+  const [deletingMonth, setDeletingMonth] = useState(false);
+
+  const handleDeleteMonth = async () => {
+    if (!selectedMonth) return;
+    setDeletingMonth(true);
+    setError(null);
+    try {
+      await deleteMonth(selectedMonth);
+      setConfirmDeleteMonth(false);
+      const rest = months.map((m) => m.month).filter((m) => m !== selectedMonth).sort();
+      await loadInitial(rest[rest.length - 1]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingMonth(false);
+    }
+  };
+
   const handleMeterImported = async (imported) => {
     setShowImport(false);
     const latest = imported[imported.length - 1]?.month;
@@ -475,6 +548,15 @@ function App() {
               )}
               {isOwner && (
                 <button
+                  onClick={() => setConfirmDeleteMonth(true)}
+                  disabled={!selectedMonth || loading || confirmDeleteMonth}
+                  className="btn-danger"
+                >
+                  Delete month
+                </button>
+              )}
+              {isOwner && (
+                <button
                   onClick={() => setShowImport(true)}
                   disabled={loading || showImport}
                   className="btn-secondary"
@@ -494,6 +576,25 @@ function App() {
         </div>
 
         {error && <ErrorAlert message={error} onRetry={() => loadInitial(selectedMonth)} />}
+
+        {view === 'household' && confirmDeleteMonth && selectedMonth && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+            <span>
+              Delete <span className="font-semibold">{formatMonth(selectedMonth)}</span> and its meter readings?
+              Payments stay (they belong to their dates).
+              {months.some((m) => m.month > selectedMonth) &&
+                ' The month after it will then start from the readings of the month before it.'}
+            </span>
+            <span className="flex gap-2">
+              <button onClick={handleDeleteMonth} disabled={deletingMonth} className="btn-danger">
+                {deletingMonth ? 'Deleting…' : 'Delete month'}
+              </button>
+              <button onClick={() => setConfirmDeleteMonth(false)} className="btn-secondary">
+                Cancel
+              </button>
+            </span>
+          </div>
+        )}
 
         {/* Stays mounted while on the Household tab, so coming back is instant. */}
         {me?.roommate && (
@@ -804,6 +905,9 @@ function App() {
                   onChanged={() => loadMonthData(selectedMonth, { quiet: true })}
                 />
               </>
+            )}
+            {isOwner && household && (
+              <DeleteHouseholdCard household={household} onDeleted={onHouseholdDeleted} />
             )}
           </>
         )}
