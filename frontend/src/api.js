@@ -115,6 +115,17 @@ export const uploadMeterReport = (file, { dryRun }) =>
     })
     .then((res) => res.data);
 
+// A recording of someone saying a payment -> a draft { transcript, amount,
+// date, date_said, meter, meter_said }. Nothing is saved. today: the phone's
+// date, so "today"/"yesterday" mean the user's day, not the server's.
+export const voicePayment = (audio, todayDate) =>
+  api
+    .post('/voice/payment', audio, {
+      params: { today: todayDate },
+      headers: { 'Content-Type': audio.type || 'audio/webm' },
+    })
+    .then((res) => res.data);
+
 // Calculated split + balances for a month
 export const getCalculate = (month) =>
   api.get(`/calculate/${month}`).then((res) => res.data);

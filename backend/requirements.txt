@@ -8,3 +8,4 @@ psycopg-pool==3.3.3
 PyJWT[crypto]==2.14.0
 python-dotenv==1.2.3
 mailtrap==2.10.0
+requests>=2.31,<3

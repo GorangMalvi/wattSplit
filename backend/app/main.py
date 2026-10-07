@@ -14,7 +14,7 @@ import html
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, List, Optional
 from uuid import UUID
 
@@ -22,7 +22,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Reques
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import calc, db, export, mailer, meter_report
+from . import calc, db, export, mailer, meter_report, voice
 from .auth import current_claims, current_user_id
 from .models import (
     Dashboard,
@@ -49,6 +49,7 @@ from .models import (
     RoommateCreate,
     RoommateOut,
     RunningBalance,
+    VoicePaymentDraft,
 )
 
 
@@ -340,7 +341,7 @@ def unlink_roommate(roommate_id: int, hid: OwnedHouseholdId):
 @app.get("/api/me", response_model=MeOut)
 def me(member: CurrentMember):
     roommate = None if member.roommate_id is None else db.get_roommate(member.hid, member.roommate_id)
-    return {"role": member.role, "roommate": roommate}
+    return {"role": member.role, "roommate": roommate, "voice_enabled": voice.enabled()}
 
 
 @app.post("/api/me/roommate", response_model=MeOut)
@@ -363,7 +364,7 @@ def link_my_roommate(payload: LinkRoommate, member: CurrentMember):
             )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    return {"role": member.role, "roommate": roommate}
+    return {"role": member.role, "roommate": roommate, "voice_enabled": voice.enabled()}
 
 
 @app.delete("/api/me/roommate", status_code=204)
@@ -534,6 +535,43 @@ def delete_recharge(recharge_id: int, member: CurrentMember):
     if not db.delete_recharge(member.hid, recharge_id):
         raise HTTPException(status_code=404, detail="Recharge not found")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Voice payments
+# ---------------------------------------------------------------------------
+MAX_VOICE_BYTES = 1024 * 1024  # ~1 minute of compressed speech; the app stops at 15 s
+
+
+@app.post("/api/voice/payment", response_model=VoicePaymentDraft)
+async def voice_payment(
+    request: Request,
+    member: CurrentMember,
+    today: Optional[date] = Query(None, description="The phone's date, for 'today' and 'yesterday'"),
+):
+    """
+    A recording of someone saying a payment ("500 rupees yesterday in DG"),
+    sent as the raw body, turned into a draft. Nothing is saved.
+    """
+    if not voice.enabled():
+        raise HTTPException(status_code=503, detail="Voice entry isn't set up on this server")
+    if not voice.allow(member.user_id):
+        raise HTTPException(status_code=429, detail="Too many recordings. Wait a minute and try again.")
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="The recording is empty")
+    if len(content) > MAX_VOICE_BYTES:
+        raise HTTPException(status_code=413, detail="The recording is too long")
+    try:
+        text = await run_in_threadpool(voice.transcribe, content, request.headers.get("content-type", ""))
+    except voice.VoiceError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+    if not text:
+        raise HTTPException(status_code=422, detail="Didn't catch that. Try again, a little closer to the phone.")
+    # The phone's date (the server runs on UTC), if it's plausible.
+    server_today = date.today()
+    ref = today if today is not None and abs(today - server_today) <= timedelta(days=1) else server_today
+    return {"transcript": text, **voice.parse_payment(text, ref)}
 
 
 # ---------------------------------------------------------------------------

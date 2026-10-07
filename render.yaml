@@ -27,6 +27,9 @@ services:
         value: wattsplit@jugadu.tech   # must be on a domain verified in Mailtrap
       - key: MAIL_FROM_NAME
         value: wattSplit
+      # Voice payments (60db speech-to-text). Leave empty to hide the mic button.
+      - key: SIXTYDB_API_KEY
+        sync: false
       # Public web app: used in roommate invite links, and allowed to call the API.
       - key: APP_URL
         value: https://wattsplit.jugadu.tech

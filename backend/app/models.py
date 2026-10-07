@@ -261,6 +261,17 @@ class MonthCalculation(BaseModel):
 class MeOut(BaseModel):
     role: str
     roommate: Optional[RoommateOut] = None
+    voice_enabled: bool = False  # the server can turn spoken payments into drafts
+
+
+class VoicePaymentDraft(BaseModel):
+    """A spoken payment, understood but not saved: the app shows it to check first."""
+    transcript: str
+    amount: Optional[float] = None  # None: no amount heard
+    date: date
+    date_said: bool  # False: nothing said about the date, so it's today
+    meter: Literal["main", "dg"]
+    meter_said: bool
 
 
 class LinkRoommate(BaseModel):
