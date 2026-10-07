@@ -3,8 +3,8 @@
 // away (no push, no APK release).
 //
 // It installs "wattSplit Dev" (a debug build with its own app id, so the real
-// wattSplit stays installed), points it at http://localhost:5173, maps the
-// device's localhost:5173 to this PC with `adb reverse`, launches it, and
+// wattSplit stays installed), points it at http://localhost:5180, maps the
+// device's localhost:5180 to this PC with `adb reverse`, launches it, and
 // starts Vite. API calls go through Vite's /api proxy to the local backend on
 // :8000, so that has to be running too (docker compose up -d backend, or
 // uvicorn).
@@ -21,7 +21,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PORT = 5173;
+// Not 5173: docker-compose publishes the built web app there.
+const PORT = 5180;
 const APP_ID = 'com.gorangmalvi.wattsplit.dev';
 const win = process.platform === 'win32';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,6 +55,16 @@ const portOpen = (port) =>
     socket.on('error', () => resolve(false));
   });
 
+// Something on the port, and is it Vite? (Vite serves its client script.)
+const isVite = async (port) => {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/@vite/client`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+};
+
 // 1. A device to run on.
 if (!existsSync(adb)) fail(`adb not found at ${adb}. Set ANDROID_HOME to your Android SDK.`);
 const devices = adbOut('devices')
@@ -76,16 +87,20 @@ if (install) {
   // without the dev server, so release builds are never affected.
   const configPath = join(androidDir, 'app/src/main/assets/capacitor.config.json');
   const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+  // Plain http is allowed by the debug-only android/app/src/debug/AndroidManifest.xml.
   config.server = { ...config.server, url: `http://localhost:${PORT}`, cleartext: true };
   writeFileSync(configPath, JSON.stringify(config, null, '\t'));
 
-  run(win ? 'gradlew.bat' : './gradlew', ['assembleDebug', '-q'], { cwd: androidDir });
+  // Full path: cmd.exe may not look in the current folder. Quoted for the
+  // spaces in the path (a .bat needs the shell, which takes the string as is).
+  const gradlew = join(androidDir, win ? 'gradlew.bat' : 'gradlew');
+  run(win ? `"${gradlew}"` : gradlew, ['assembleDebug', '-q'], { cwd: androidDir });
   const apk = join(androidDir, 'app/build/outputs/apk/debug/app-debug.apk');
   console.log(`Installing wattSplit Dev on ${serial}…`);
   run(adb, ['-s', serial, 'install', '-r', apk], { shell: false });
 }
 
-// 3. The device's localhost:5173 -> this PC's Vite (works for emulators and USB phones).
+// 3. The device's localhost:5180 -> this PC's Vite (works for emulators and USB phones).
 run(adb, ['-s', serial, 'reverse', `tcp:${PORT}`, `tcp:${PORT}`], { shell: false });
 
 if (!(await portOpen(8000))) {
@@ -98,6 +113,9 @@ if (!(await portOpen(8000))) {
 
 // 4. Vite (unless it's already running), then open the app.
 const viteRunning = await portOpen(PORT);
+if (viteRunning && !(await isVite(PORT))) {
+  fail(`Port ${PORT} is in use by something other than Vite. Stop it, or change PORT in scripts/android-dev.mjs.`);
+}
 const vite = viteRunning
   ? null
   : spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], { cwd: root, stdio: 'inherit', shell: win });

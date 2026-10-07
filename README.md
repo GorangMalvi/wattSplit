@@ -100,7 +100,7 @@ No push or release needed: the app on the device loads the Vite dev server on th
    npm run android:dev -- --no-install # later runs, when only web code changed
    ```
 - It installs **wattSplit Dev** (app id `com.gorangmalvi.wattsplit.dev`), a debug build that sits next to the real app instead of replacing it. Sign in to it once.
-- `adb reverse` maps the device's `localhost:5173` to this PC, so it works the same on an emulator and on a USB phone. The microphone works too, because `localhost` counts as a secure page.
+- `adb reverse` maps the device's `localhost:5180` to this PC, so it works the same on an emulator and on a USB phone. The microphone works too, because `localhost` counts as a secure page.
 - Console, network and errors: open `chrome://inspect` in Chrome on the PC.
 - Run it again without `--no-install` after native changes: Capacitor plugins, `AndroidManifest.xml` or `build.gradle`.
 - Release builds (`npm run apk:release`) re-sync the config, so they never point at the dev server.
