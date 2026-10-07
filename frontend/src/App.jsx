@@ -492,6 +492,7 @@ function App() {
               active={view === 'mine'}
               roommates={roommates}
               onLinkChange={handleLinkChange}
+              voiceEnabled={Boolean(me.voice_enabled)}
             />
           </div>
         )}

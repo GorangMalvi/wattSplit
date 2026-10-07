@@ -14,6 +14,7 @@ import ErrorAlert from './ErrorAlert';
 import LoadingSpinner from './LoadingSpinner';
 import MeterBadge, { METERS } from './MeterBadge';
 import SummaryCard from './SummaryCard';
+import VoicePaymentButton, { canRecord } from './VoicePaymentButton';
 
 // First visit: "which roommate are you?"
 function LinkRoommateCard({ roommates, onLinked }) {
@@ -237,14 +238,31 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   );
 }
 
-function PaymentForm({ roommateId, onSaved }) {
+// voiceEnabled: the server can understand spoken payments ("Say it" fills the
+// form; the person still checks it and taps Add payment). biggestPayment: the
+// largest payment so far, to flag amounts far above it (speech-to-text can
+// hear "do hazaar" as 20000, and typos happen).
+function PaymentForm({ roommateId, onSaved, voiceEnabled = false, biggestPayment = 0 }) {
   const [date, setDate] = useState(today());
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
   const [meter, setMeter] = useState('main');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [heard, setHeard] = useState(null); // the last voice draft
   const value = parseFloat(amount);
+  const unusualAbove = biggestPayment > 0 ? biggestPayment * 3 : 10000;
+  const unusual = !Number.isNaN(value) && value > unusualAbove;
+
+  const fillFromVoice = (draft) => {
+    setHeard(draft);
+    setError(null);
+    if (draft.amount !== null) setAmount(String(draft.amount));
+    setDate(draft.date);
+    setMeter(draft.meter);
+  };
+  // Fields voice filled in get a highlight until the payment is saved.
+  const voiceRing = (filled) => (heard && filled ? 'ring-2 ring-amber-300' : '');
 
   const save = async (e) => {
     e.preventDefault();
@@ -255,6 +273,7 @@ function PaymentForm({ roommateId, onSaved }) {
       await createRecharge({ date, roommate_id: roommateId, amount: value, notes, meter });
       setAmount('');
       setNotes('');
+      setHeard(null);
       onSaved();
     } catch (err) {
       setError(err.message);
@@ -266,12 +285,32 @@ function PaymentForm({ roommateId, onSaved }) {
   return (
     <form onSubmit={save} className="space-y-3">
       {error && <ErrorAlert message={error} />}
+      {voiceEnabled && canRecord() && <VoicePaymentButton onDraft={fillFromVoice} disabled={saving} />}
+      {heard && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <p>
+            Heard: <span className="italic">“{heard.transcript}”</span>
+          </p>
+          <p className="mt-1 text-xs text-amber-800">
+            {heard.amount === null
+              ? 'Couldn’t find an amount: type it in below.'
+              : 'Check the amount, date and meter, then tap Add payment.'}
+            {!heard.date_said && ' No date heard, so it’s set to today.'}
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="flex flex-col gap-1">
           <label htmlFor="pay-date" className="text-xs font-medium text-slate-500">
             Date
           </label>
-          <input id="pay-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <input
+            id="pay-date"
+            type="date"
+            value={date}
+            className={voiceRing(heard?.date_said)}
+            onChange={(e) => setDate(e.target.value)}
+          />
         </div>
         <div className="flex flex-col gap-1">
           <label htmlFor="pay-amount" className="text-xs font-medium text-slate-500">
@@ -285,8 +324,16 @@ function PaymentForm({ roommateId, onSaved }) {
             min="0"
             placeholder="0.00"
             value={amount}
+            className={voiceRing(heard?.amount !== null)}
             onChange={(e) => setAmount(e.target.value)}
           />
+          {unusual && (
+            <p className="text-xs text-amber-700">
+              {biggestPayment > 0
+                ? `Much more than your biggest payment so far (${formatMoney(biggestPayment)}). Check the amount.`
+                : 'That’s a large amount. Check it before saving.'}
+            </p>
+          )}
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -294,7 +341,12 @@ function PaymentForm({ roommateId, onSaved }) {
           <label htmlFor="pay-meter" className="text-xs font-medium text-slate-500">
             Meter
           </label>
-          <select id="pay-meter" value={meter} onChange={(e) => setMeter(e.target.value)}>
+          <select
+            id="pay-meter"
+            value={meter}
+            className={voiceRing(heard?.meter_said)}
+            onChange={(e) => setMeter(e.target.value)}
+          >
             {METERS.map(([key, label]) => (
               <option key={key} value={key}>
                 {label}
@@ -358,7 +410,7 @@ function UsageChart({ months }) {
 
 // active: the tab is showing. Each time it's shown again the data refreshes in
 // the background (the Household tab may have changed it) without a spinner.
-function MyDashboard({ active = true, roommates, onLinkChange }) {
+function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = false }) {
   const [dash, setDash] = useState(null);
   const [error, setError] = useState(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -537,7 +589,12 @@ function MyDashboard({ active = true, roommates, onLinkChange }) {
         </div>
         <div className="card">
           <h3 className="mb-4 text-lg font-semibold text-slate-900">Add a payment</h3>
-          <PaymentForm roommateId={roommate.id} onSaved={load} />
+          <PaymentForm
+            roommateId={roommate.id}
+            onSaved={load}
+            voiceEnabled={voiceEnabled}
+            biggestPayment={Math.max(0, ...dash.recharges.map((p) => p.amount))}
+          />
         </div>
       </div>
 

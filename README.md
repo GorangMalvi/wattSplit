@@ -61,12 +61,19 @@ npm run dev
 ```
 Open `http://localhost:5173`.
 
+### Tests
+```bash
+cd backend
+pip install pytest httpx
+python -m pytest
+```
+
 ## Android app (APK)
 The React app is wrapped with [Capacitor](https://capacitorjs.com/) (`frontend/android/`). The APK can't use the local `/api` proxy, so it calls a **deployed** backend.
 
 ### 1. Deploy the backend (Render, free)
 1. On [render.com](https://render.com), **New → Blueprint**, connect this GitHub repo. It reads `render.yaml`.
-2. Enter the secrets it asks for: `SUPABASE_URL`, `DATABASE_URL` (Session pooler), `MAILTRAP_API_TOKEN`, `MAIL_FROM_EMAIL`. Leave `SUPABASE_JWT_SECRET` empty for JWT signing keys.
+2. Enter the secrets it asks for: `SUPABASE_URL`, `DATABASE_URL` (Session pooler), `MAILTRAP_API_TOKEN`, `MAIL_FROM_EMAIL`, and optionally `SIXTYDB_API_KEY` (voice payments). Leave `SUPABASE_JWT_SECRET` empty for JWT signing keys.
 3. When it's live, check `https://<your-service>.onrender.com/api/health` returns `{"status":"ok"}`.
 
 The free plan sleeps after 15 minutes idle; the first request after that takes up to a minute.
@@ -97,6 +104,7 @@ Invite links and emails to flatmates need a public web address and a verified se
 - Create months; the main meter start reading carries over from the previous month
 - **Prepaid meter balances by hand**: each month can take the meter's opening balance, recharge and closing balance; the Monthly Bill is then worked out as opening + recharge − closing, and a new month's opening balance carries over from the last closing balance
 - **Import meter report**: the owner uploads the prepaid meter's Monthly Consumption Report (.xlsx); each month's main meter readings and bill are filled in. Bill = opening balance + recharge − closing balance (everything the meter deducted), rate = bill ÷ main units; the closing balance carries forward
+- **Voice payments**: on My dashboard, tap *Say it* and say the payment in English, Hindi or Hinglish ("500 rupees yesterday, DG", "kal dedh hazaar ka recharge kiya"). [60db](https://docs.60db.ai) transcribes it and the app fills in the amount, date and meter; nothing is saved until you check it and tap *Add payment*. Needs `SIXTYDB_API_KEY` on the backend (the button is hidden without it); limited to 5 recordings a minute per person. Try the parser alone: `python -m app.voice "maine kal paanch sau ka DG recharge kiya"`
 - Sub-meter readings carry forward: last month's reading is this month's start. For a first month (no reading last month) enter a **start reading**, so only the units used that month are billed
 - Enter per-room meter readings and recharges/payments; each payment is for the **Main** meter or the **DG**, and balances are tracked per meter (energy charge vs main payments, DG share vs DG payments)
 - Auto-calculate the split, including common units and DG charges
