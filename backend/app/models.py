@@ -246,6 +246,12 @@ class CalculationSummary(BaseModel):
     rate_per_unit: float
     total_bill: float
     dg_bill: float
+    # Common units = main_units - sub_units_total (never below 0), shared
+    # equally: common_share each among active_roommates.
+    sub_units_total: Optional[float] = None
+    common_units: Optional[float] = None
+    common_share: Optional[float] = None
+    active_roommates: Optional[int] = None
 
 
 class MonthCalculation(BaseModel):
@@ -262,6 +268,22 @@ class MeOut(BaseModel):
     role: str
     roommate: Optional[RoommateOut] = None
     voice_enabled: bool = False  # the server can turn spoken payments into drafts
+
+
+class DevLoginStatus(BaseModel):
+    enabled: bool
+    code: Optional[str] = None
+
+
+class DevLogin(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    code: str = Field(..., max_length=10)
+
+
+class DevLoginToken(BaseModel):
+    """For supabase.auth.verifyOtp({ token_hash, type })."""
+    token_hash: str
+    type: str
 
 
 class VoicePaymentDraft(BaseModel):

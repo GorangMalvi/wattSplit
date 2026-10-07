@@ -61,6 +61,14 @@ npm run dev
 ```
 Open `http://localhost:5173`.
 
+### Sign in without email (local development)
+In `npm run dev` and the Android dev app, sign in with code **123456**: no email is sent. Add to `.env` (never to Render):
+```
+SUPABASE_SERVICE_ROLE_KEY=...      # Supabase > Project Settings > API Keys (service_role / secret). Full admin access: keep it secret
+DEV_LOGIN_EMAILS=you@example.com   # who may use it: emails, @domain, or *
+```
+Then restart the backend (`docker compose up -d backend`). The backend asks Supabase's admin API for a sign-in token instead of emailing a code. It is off when either setting is missing. Production builds leave it out, the Docker nginx blocks `/api/dev/`, and the backend port is bound to 127.0.0.1, so only this PC can use it.
+
 ### Tests
 ```bash
 cd backend
@@ -87,6 +95,23 @@ npm install
 npm run apk
 ```
 The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Copy it to the phone and open it (allow "install unknown apps" for the file manager / browser you open it with).
+
+### 3. Develop on a phone or emulator (live reload)
+No push or release needed: the app on the device loads the Vite dev server on this PC, and saved changes show up straight away.
+
+1. Start the local backend: `docker compose up -d backend`, or `cd backend && uvicorn app.main:app --reload --port 8000`.
+2. Start an emulator (Android Studio > Device Manager > ▶), or plug in a phone with USB debugging on.
+3. Run:
+   ```bash
+   cd frontend
+   npm run android:dev                 # build + install "wattSplit Dev", launch it, start Vite
+   npm run android:dev -- --no-install # later runs, when only web code changed
+   ```
+- It installs **wattSplit Dev** (app id `com.gorangmalvi.wattsplit.dev`), a debug build that sits next to the real app instead of replacing it. Sign in to it once.
+- `adb reverse` maps the device's `localhost:5180` to this PC, so it works the same on an emulator and on a USB phone. The microphone works too, because `localhost` counts as a secure page.
+- Console, network and errors: open `chrome://inspect` in Chrome on the PC.
+- Run it again without `--no-install` after native changes: Capacitor plugins, `AndroidManifest.xml` or `build.gradle`.
+- Release builds (`npm run apk:release`) re-sync the config, so they never point at the dev server.
 
 ## Public web app and invites (wattsplit.jugadu.tech)
 

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only ("wattSplit Dev"): allow plain http, so the app can load
+     the live-reload dev server at http://localhost (npm run android:dev).
+     Release builds keep Android's default: https only. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>

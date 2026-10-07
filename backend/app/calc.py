@@ -159,6 +159,11 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
         "rate_per_unit": rate,
         "total_bill": monthly_bill + dg_bill,
         "dg_bill": dg_bill,
+        # How the common units came about: main meter - all sub-meters, shared equally.
+        "sub_units_total": sum_sub_units,
+        "common_units": common_units,
+        "common_share": common_share,
+        "active_roommates": active_count,
     }
     return summary, split_rows
 

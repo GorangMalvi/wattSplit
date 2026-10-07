@@ -22,7 +22,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Reques
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import calc, db, export, mailer, meter_report, voice
+from . import calc, db, dev_login, export, mailer, meter_report, voice
 from .auth import current_claims, current_user_id
 from .models import (
     Dashboard,
@@ -50,6 +50,9 @@ from .models import (
     RoommateOut,
     RunningBalance,
     VoicePaymentDraft,
+    DevLogin,
+    DevLoginStatus,
+    DevLoginToken,
 )
 
 
@@ -146,6 +149,22 @@ def _require_editable_roommate(member: Member, roommate_id: int) -> None:
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Local development sign-in (code 123456, no email). Off on servers: see dev_login.py
+# ---------------------------------------------------------------------------
+@app.get("/api/dev/login", response_model=DevLoginStatus)
+def dev_login_status():
+    return {"enabled": dev_login.enabled(), "code": dev_login.DEV_LOGIN_CODE if dev_login.enabled() else None}
+
+
+@app.post("/api/dev/login", response_model=DevLoginToken)
+def dev_login_token(payload: DevLogin):
+    try:
+        return dev_login.sign_in_token(payload.email, payload.code)
+    except dev_login.DevLoginError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

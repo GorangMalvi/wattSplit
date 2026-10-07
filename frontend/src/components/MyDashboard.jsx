@@ -518,7 +518,11 @@ function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = fa
         <SummaryCard
           label={latest ? `Bill · ${formatMonth(latest.month)}` : 'Latest bill'}
           value={formatMoney(latest?.total_bill)}
-          subtext={latest ? `${formatNumber(latest.total_units)} units @ ${formatMoney(latest.rate_per_unit)}` : 'No bill yet'}
+          subtext={
+            latest
+              ? `${formatNumber(latest.sub_units)} own + ${formatNumber(latest.common_share)} common units @ ${formatMoney(latest.rate_per_unit)}`
+              : 'No bill yet'
+          }
         />
         <SummaryCard
           label="Average usage"
