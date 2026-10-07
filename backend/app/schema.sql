@@ -115,6 +115,25 @@ create table if not exists public.invites (
 
 create index if not exists invites_household_idx on public.invites (household_id);
 
+-- Settling up: one roommate paying another back directly (not a meter
+-- recharge). The payer's balance goes down by the amount, the receiver's up.
+create table if not exists public.settlements (
+    id               bigint generated always as identity primary key,
+    household_id     uuid not null references public.households (id) on delete cascade,
+    date             date not null default current_date,
+    from_roommate_id bigint not null,
+    to_roommate_id   bigint not null,
+    amount           double precision not null check (amount > 0),
+    notes            text not null default '',
+    created_by       uuid references auth.users (id) on delete set null,
+    created_at       timestamptz not null default now(),
+    check (from_roommate_id <> to_roommate_id),
+    foreign key (household_id, from_roommate_id) references public.roommates (household_id, id) on delete cascade,
+    foreign key (household_id, to_roommate_id) references public.roommates (household_id, id) on delete cascade
+);
+
+create index if not exists settlements_household_idx on public.settlements (household_id, date);
+
 -- ---------------------------------------------------------------------------
 -- Row Level Security
 --
@@ -171,6 +190,7 @@ alter table public.months            enable row level security;
 alter table public.readings          enable row level security;
 alter table public.recharges         enable row level security;
 alter table public.invites           enable row level security;
+alter table public.settlements       enable row level security;
 
 -- Invite codes are secrets: only the owner can see them over the REST API,
 -- and only the backend writes them.
@@ -231,3 +251,18 @@ create policy "owner or self manages recharges" on public.recharges
     for all to authenticated
     using (public.is_household_owner(household_id) or public.is_own_roommate(household_id, roommate_id))
     with check (public.is_household_owner(household_id) or public.is_own_roommate(household_id, roommate_id));
+
+drop policy if exists "members read settlements" on public.settlements;
+create policy "members read settlements" on public.settlements
+    for select to authenticated using (public.is_household_member(household_id));
+
+-- The owner, or either of the two roommates involved.
+drop policy if exists "owner or party manages settlements" on public.settlements;
+create policy "owner or party manages settlements" on public.settlements
+    for all to authenticated
+    using (public.is_household_owner(household_id)
+           or public.is_own_roommate(household_id, from_roommate_id)
+           or public.is_own_roommate(household_id, to_roommate_id))
+    with check (public.is_household_owner(household_id)
+                or public.is_own_roommate(household_id, from_roommate_id)
+                or public.is_own_roommate(household_id, to_roommate_id));

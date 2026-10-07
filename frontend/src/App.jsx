@@ -27,6 +27,7 @@ import NewMonthForm from './components/NewMonthForm';
 import MeterReportImport from './components/MeterReportImport';
 import MeterBalanceFields from './components/MeterBalanceFields';
 import RoommatesTable from './components/RoommatesTable';
+import SettleUpCard from './components/SettleUpCard';
 import SummaryCard from './components/SummaryCard';
 import ReadingsTable from './components/ReadingsTable';
 import RechargesTable from './components/RechargesTable';
@@ -781,7 +782,13 @@ function App() {
                             key={h.roommate_id || h.id}
                             name={h.name}
                             balance={h.balance}
-                            detail={`Main ${formatMoney(h.main_balance)} · DG ${formatMoney(h.dg_balance)}`}
+                            detail={`Main ${formatMoney(h.main_balance)} · DG ${formatMoney(h.dg_balance)}${
+                              h.settled_cumulative > 0
+                                ? ` · paid back ${formatMoney(h.settled_cumulative)}`
+                                : h.settled_cumulative < 0
+                                  ? ` · received ${formatMoney(-h.settled_cumulative)}`
+                                  : ''
+                            }`}
                           />
                         ))}
                       </div>
@@ -790,6 +797,12 @@ function App() {
                     )}
                   </div>
                 </div>
+
+                <SettleUpCard
+                  refreshKey={history}
+                  canRecord={(fromId, toId) => isOwner || [fromId, toId].includes(myRoommateId)}
+                  onChanged={() => loadMonthData(selectedMonth, { quiet: true })}
+                />
               </>
             )}
           </>
