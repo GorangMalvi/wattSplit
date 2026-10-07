@@ -112,12 +112,19 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
         })
 
     common_units = main_units - sum_sub_units
+    # Sub-meters above the main meter: their readings were taken later than the
+    # main meter's (e.g. sub-meters on the 3rd, the report up to the 30th), or
+    # the main readings are missing. There are no common units then, and the
+    # bill is split in proportion to each roommate's own units, so the split
+    # still adds up to exactly what the meter charged. Next month starts from
+    # the actual readings, so the extra days are billed then.
+    units_mismatch = max(-common_units, 0.0)
     if common_units < 0:
-        # Main meter is lower than the sum of sub-meters; clamp to zero.
         common_units = 0.0
     common_share = common_units / active_count
 
-    rate = monthly_bill / main_units if main_units else 0.0
+    billed_units = max(main_units, sum_sub_units)
+    rate = monthly_bill / billed_units if billed_units > 0 else 0.0
     dg_share = dg_bill / active_count
 
     # Recharges for this month only, per meter.
@@ -164,6 +171,8 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
         "common_units": common_units,
         "common_share": common_share,
         "active_roommates": active_count,
+        # Units the sub-meters show beyond the main meter (0 when they fit).
+        "units_mismatch": units_mismatch,
     }
     return summary, split_rows
 

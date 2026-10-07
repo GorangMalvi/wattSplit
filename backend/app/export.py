@@ -53,7 +53,7 @@ def generate_month_report(month: str, data: HouseholdData) -> bytes:
         ("Main Start Reading", month_row["main_start_reading"] if month_row is not None else 0),
         ("Main End Reading", month_row["main_end_reading"] if month_row is not None else 0),
         ("Main Units", result["summary"]["main_units"]),
-        ("Common Units", result["summary"]["main_units"] - sum(r["sub_units"] for r in result["roommates"])),
+        ("Common Units", result["summary"]["common_units"]),
         ("Rate", result["summary"]["rate_per_unit"]),
         ("Active Roommates", len(result["roommates"])),
     ]
