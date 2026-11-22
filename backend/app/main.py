@@ -518,8 +518,13 @@ def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, 
     if month not in history:
         raise HTTPException(status_code=404, detail="Month not found")
     _require_editable_roommate(member, roommate_id)
-    fields = payload.model_dump(include=payload.model_fields_set)
+    fields = payload.model_dump(include=payload.model_fields_set - {"new_meter"})
     current, start = history[month]
+    if fields.get("start_reading") == 0 and start != 0 and not payload.new_meter:
+        raise HTTPException(
+            status_code=422,
+            detail="A start reading of 0 is only for a brand-new meter. Otherwise enter what the meter showed.",
+        )
     changed = (fields.get("current_reading", current), fields.get("start_reading", start))
     _require_forward_meter(history, month, changed)
     db.set_reading(member.hid, month, roommate_id, **fields)

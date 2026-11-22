@@ -81,6 +81,10 @@ def reading_error(months: Iterable[str], before: Readings, after: Readings, mont
     can't: the meter would run backwards in that month, or in a later one that
     was fine until now. Months that were already backwards don't block the
     change, so old mistakes can be corrected one month at a time.
+
+    Likewise a month-end reading needs somewhere to count from: a first one
+    can't be saved without a start reading, and a change can't take away what a
+    later month counts from. Months saved before this rule stay as they are.
     """
     months = sorted(months)
 
@@ -100,6 +104,20 @@ def reading_error(months: Iterable[str], before: Readings, after: Readings, mont
         if m == month:
             return f"The {name} reading ({end}) can't be lower than where it starts ({start}). Check the meter."
         return f"That would put the {name} reading ({end}) below where it starts ({start}). Check both readings."
+
+    def without_start(readings: Readings) -> List[str]:
+        return [m for m, start in reading_starts(months, readings).items()
+                if start.previous is None and readings.get(m, (None, None))[0] is not None]
+
+    had_none = without_start(before)
+    end_changed = before.get(month, (None, None))[0] != after.get(month, (None, None))[0]
+    for m in without_start(after):
+        name = f"{month_name[int(m[5:7])]} {m[:4]}"
+        if m == month and (end_changed or m not in had_none):
+            return (f"Enter the start reading for {name} first: what the meter showed "
+                    "at the start of the month, or on moving in.")
+        if m != month and m not in had_none:
+            return f"The {name} reading is counted from this one, so correct it instead of removing it."
     return None
 
 

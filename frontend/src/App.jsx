@@ -232,7 +232,8 @@ function App() {
     setReadingError(null);
     try {
       await updateReading(selectedMonth, roommateId, fields);
-      await loadMonthData(selectedMonth);
+      // In place, so readings typed in other rows but not saved yet aren't lost.
+      await loadMonthData(selectedMonth, { quiet: true });
     } catch (err) {
       setReadingError(err.message);
     } finally {
@@ -249,12 +250,8 @@ function App() {
       } else {
         await createRecharge(recharge);
       }
-      const [rechargesRes, calcRes] = await Promise.all([
-        getRecharges(selectedMonth),
-        getCalculate(selectedMonth).catch(() => null),
-      ]);
-      setRecharges(rechargesRes);
-      setCalcData(calcRes);
+      // Everything, not just this month: balances to date and Settle up change too.
+      await loadMonthData(selectedMonth, { quiet: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -267,12 +264,7 @@ function App() {
     setSaving(true);
     try {
       await deleteRecharge(id);
-      const [rechargesRes, calcRes] = await Promise.all([
-        getRecharges(selectedMonth),
-        getCalculate(selectedMonth).catch(() => null),
-      ]);
-      setRecharges(rechargesRes);
-      setCalcData(calcRes);
+      await loadMonthData(selectedMonth, { quiet: true });
     } catch (err) {
       setError(err.message);
     } finally {

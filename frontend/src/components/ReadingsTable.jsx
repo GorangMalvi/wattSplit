@@ -19,21 +19,49 @@ function ReadingsTable({ rows, onUpdate, loading, canEdit = () => true, mainUnit
     setDrafts((prev) => ({ ...prev, [key(roommateId, field)]: value }));
   };
 
-  const handleBlur = (row, field) => {
-    const k = key(row.roommate_id, field);
-    const value = drafts[k];
-    if (value === undefined) return;
+  const draftOf = (row, field) => drafts[key(row.roommate_id, field)];
+  const clearDrafts = (row, ...fields) =>
     setDrafts((prev) => {
       const next = { ...prev };
-      delete next[k];
+      for (const field of fields) delete next[key(row.roommate_id, field)];
       return next;
     });
+
+  // A first reading has nothing to count from until a start reading is given.
+  const needsStart = (row) => row.previous_editable && row.start_reading === null && row.fallback_reading === null;
+  const endHeld = (row) => {
+    const typed = parseFloat(draftOf(row, 'current_reading'));
+    return needsStart(row) && typed >= 0 && typed !== row.current_reading;
+  };
+  // A start of 0 is only right for a brand-new meter, so it's asked about.
+  const zeroTyped = (row) => row.start_reading !== 0 && parseFloat(draftOf(row, 'start_reading')) === 0;
+
+  const saveStart = (row, start, extra = {}) => {
+    const fields = { start_reading: start, ...extra };
+    if (endHeld(row)) fields.current_reading = parseFloat(draftOf(row, 'current_reading'));
+    clearDrafts(row, 'start_reading', 'current_reading');
+    onUpdate(row.roommate_id, fields);
+  };
+
+  const handleBlur = (row, field) => {
+    const value = draftOf(row, field);
+    if (value === undefined) return;
     if (value.trim() === '') {
+      clearDrafts(row, field);
       if (row[field] !== null && row[field] !== undefined) onUpdate(row.roommate_id, { [field]: null });
       return;
     }
     const numeric = parseFloat(value);
-    if (Number.isNaN(numeric) || numeric < 0 || numeric === row[field]) return;
+    if (Number.isNaN(numeric) || numeric < 0 || numeric === row[field]) {
+      clearDrafts(row, field);
+      return;
+    }
+    if (field === 'start_reading') {
+      if (numeric !== 0) saveStart(row, numeric);
+      return;
+    }
+    if (needsStart(row)) return; // held until the start reading is in
+    clearDrafts(row, field);
     onUpdate(row.roommate_id, { [field]: numeric });
   };
 
@@ -76,12 +104,35 @@ function ReadingsTable({ rows, onUpdate, loading, canEdit = () => true, mainUnit
                   {row.previous_editable && editable ? (
                     <div className="flex flex-col items-end gap-1">
                       {input(row, 'start_reading', 'Start')}
-                      <span className="text-xs text-slate-400">
-                        No reading last month
-                        {row.start_reading === null &&
-                          row.fallback_reading !== null &&
-                          `, counting from ${fmt(row.fallback_reading)}`}
-                      </span>
+                      {zeroTyped(row) ? (
+                        <span className="flex flex-wrap items-center justify-end gap-1 text-xs text-amber-700">
+                          Is this a brand-new meter?
+                          <button
+                            onClick={() => saveStart(row, 0, { new_meter: true })}
+                            disabled={loading}
+                            className="btn-secondary px-2 py-1 text-xs"
+                          >
+                            Yes, it starts at 0
+                          </button>
+                          <button
+                            onClick={() => clearDrafts(row, 'start_reading')}
+                            className="btn-secondary px-2 py-1 text-xs"
+                          >
+                            No
+                          </button>
+                        </span>
+                      ) : endHeld(row) ? (
+                        <span className="text-xs text-amber-700">
+                          Not saved yet: enter what the meter showed at the start, or on moving in
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">
+                          No reading last month
+                          {row.start_reading === null &&
+                            row.fallback_reading !== null &&
+                            `, counting from ${fmt(row.fallback_reading)}`}
+                        </span>
+                      )}
                     </div>
                   ) : (
                     <span

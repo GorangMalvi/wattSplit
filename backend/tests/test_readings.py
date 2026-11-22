@@ -113,6 +113,38 @@ def test_accepts_valid_changes_and_corrections(save, history, m, body):
     assert response.status_code == 200 and written == [body]
 
 
+def test_a_first_reading_needs_a_start(save):
+    response, written = save({M5: NONE}, M5, {"current_reading": 2100})
+    assert response.status_code == 422 and "start reading" in response.json()["detail"]
+    assert written == []
+    assert save({M5: NONE}, M5, {"current_reading": 2100, "start_reading": 2000})[0].status_code == 200
+    assert save({M5: (None, 2000)}, M5, {"current_reading": 2100})[0].status_code == 200
+
+
+def test_months_saved_before_the_rule(save):
+    old = {M5: (2100, None), M6: NONE}
+    assert save(old, M5, {"current_reading": 2100})[0].status_code == 200  # unchanged
+    assert save(old, M5, {"current_reading": 2150})[0].status_code == 422  # changed: needs a start now
+    assert save(old, M5, {"start_reading": 2000})[0].status_code == 200
+    assert save(old, M6, {"current_reading": 2200})[0].status_code == 200  # later months aren't stuck
+
+
+def test_a_start_cannot_be_taken_away(save):
+    assert save({M5: (2100, 2000)}, M5, {"start_reading": None})[0].status_code == 422
+    history = {M5: (2100, 2000), M6: (2200, None)}
+    response, written = save(history, M5)
+    assert response.status_code == 422 and "counted from this one" in response.json()["detail"]
+    assert written == []
+
+
+def test_a_start_of_zero_must_be_confirmed(save):
+    both = {"start_reading": 0, "current_reading": 90}
+    response, written = save({M5: NONE}, M5, both)
+    assert response.status_code == 422 and "brand-new" in response.json()["detail"] and written == []
+    response, written = save({M5: NONE}, M5, {**both, "new_meter": True})
+    assert response.status_code == 200 and written == [both]  # new_meter itself isn't stored
+
+
 def test_deleting_cannot_make_a_later_month_negative(save):
     history = {M5: (2100, None), M6: (50, None), M7: (90, None)}
     response, written = save(history, M6)

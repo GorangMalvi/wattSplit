@@ -103,6 +103,7 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   const selected = options.find((m) => m.month === month);
   const [value, setValue] = useState('');
   const [startValue, setStartValue] = useState('');
+  const [newMeter, setNewMeter] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -111,6 +112,7 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   useEffect(() => {
     setValue(stored);
     setStartValue(storedStart);
+    setNewMeter(false);
     setError(null);
   }, [month, stored, storedStart]);
 
@@ -127,7 +129,7 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   const startReading = askStart ? parseReading(startValue) : null;
   const fallback = selected?.fallback_reading ?? null; // last known reading, used without a start
   const previous = askStart ? (startReading ?? fallback) : selected?.previous_reading;
-  const units = reading === null ? null : previous == null ? reading : reading - previous;
+  const units = reading === null || previous == null ? null : reading - previous;
 
   // Only what changed: the month-end reading and/or the start reading (blank clears it).
   const changes = {};
@@ -136,7 +138,10 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
     if (startReading !== null && startReading !== selected?.start_reading) changes.start_reading = startReading;
     if (startValue === '' && selected?.start_reading != null) changes.start_reading = null;
   }
-  const canSave = Object.keys(changes).length > 0;
+  const startMissing = changes.current_reading !== undefined && previous == null;
+  const startIsZero = changes.start_reading === 0;
+  if (startIsZero && newMeter) changes.new_meter = true;
+  const canSave = Object.keys(changes).length > 0 && !startMissing && (!startIsZero || newMeter);
 
   const save = async (e) => {
     e.preventDefault();
@@ -232,6 +237,17 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
           </>
         )}
       </p>
+      {startMissing && (
+        <p className="text-sm text-amber-700">
+          Enter the start reading too: what your meter showed at the start of the month, or when you moved in.
+        </p>
+      )}
+      {startIsZero && (
+        <label className="flex items-center gap-2 text-sm text-amber-700">
+          <input type="checkbox" checked={newMeter} onChange={(e) => setNewMeter(e.target.checked)} />
+          This is a brand-new meter that starts at 0
+        </label>
+      )}
       {units !== null && units < 0 && (
         <p className="text-sm text-rose-600">
           This is lower than the start of the month. Check the meter before saving.

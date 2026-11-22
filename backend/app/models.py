@@ -165,6 +165,7 @@ class ReadingUpdate(BaseModel):
     """Send either or both; a field sent as null is cleared."""
     current_reading: Optional[float] = Field(None, ge=0)
     start_reading: Optional[float] = Field(None, ge=0)
+    new_meter: bool = Field(False, description="Confirms a start_reading of 0: the meter is brand new")
 
     @model_validator(mode="after")
     def something_to_set(self) -> "ReadingUpdate":
