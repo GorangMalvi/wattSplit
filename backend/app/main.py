@@ -187,6 +187,18 @@ def create_household(payload: HouseholdCreate, user_id: UserId):
     return db.create_household(user_id, payload.name)
 
 
+@app.delete("/api/household", status_code=204)
+def delete_household(hid: OwnedHouseholdId, confirm_name: str = Query(..., description="The household's name, typed to confirm")):
+    """Owner: delete the household in X-Household-Id and everything in it."""
+    household = db.get_household(hid)
+    if household is None:
+        raise HTTPException(status_code=404, detail="Household not found")
+    if confirm_name.strip() != household["name"].strip():
+        raise HTTPException(status_code=422, detail="Type the household's name exactly to delete it")
+    db.delete_household(hid)
+    return None
+
+
 @app.post("/api/households/join", response_model=HouseholdOut)
 def join_household(payload: HouseholdJoin, claims: Annotated[dict, Depends(current_claims)]):
     """Join with the household's code, or with a personal invite code."""
@@ -473,6 +485,14 @@ def update_month(month: MonthParam, payload: MonthUpdate, hid: OwnedHouseholdId)
     if updated is None:
         raise HTTPException(status_code=404, detail="Month not found")
     return updated
+
+
+@app.delete("/api/months/{month}", status_code=204)
+def delete_month(month: MonthParam, hid: OwnedHouseholdId):
+    """Owner: delete the month and its meter readings. Payments stay (they're by date)."""
+    if not db.delete_month(hid, month):
+        raise HTTPException(status_code=404, detail="Month not found")
+    return None
 
 
 MAX_REPORT_BYTES = 2 * 1024 * 1024

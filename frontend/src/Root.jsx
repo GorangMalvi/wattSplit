@@ -283,7 +283,17 @@ function Root() {
         </div>
       </div>
       <Notice notice={notice} onClose={() => setNotice(null)} />
-      <App key={active.id} />
+      <App
+        key={active.id}
+        household={active}
+        onHouseholdDeleted={() => {
+          const rest = households.filter((h) => h.id !== active.id);
+          setHouseholds(rest);
+          setNotice({ tone: 'success', text: `Deleted "${active.name}".` });
+          if (rest.length > 0) selectHousehold(rest[0].id);
+          else setActiveId(null);
+        }}
+      />
     </>
   );
 }
