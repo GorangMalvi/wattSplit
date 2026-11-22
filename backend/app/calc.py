@@ -37,8 +37,31 @@ def _roommate_is_active(roommate: str, month: str, roommates_df: pd.DataFrame) -
     return bool(r.get("is_active", True)) or bool(leave)
 
 
-# One roommate's readings: month -> (month-end reading, start reading).
-Readings = Dict[str, Tuple[Optional[float], Optional[float]]]
+# One roommate's readings: month -> (month-end reading, start reading, old
+# meter's last reading). The third is only set when the meter was replaced that
+# month, and may be left off; the other two are then the new meter's.
+Readings = Dict[str, Tuple[Optional[float], ...]]
+
+
+class Reading(NamedTuple):
+    current: Optional[float] = None
+    start: Optional[float] = None
+    old_final: Optional[float] = None
+
+    @property
+    def replaced(self) -> bool:
+        return self.old_final is not None
+
+
+def units_used(reading: Reading, previous: Optional[float]) -> float:
+    """A month's units: with a replaced meter, what the old one used plus what the new one did."""
+    if previous is None:
+        # No prior or start reading => treat the whole current reading as
+        # consumption (a first month entered without a start reading).
+        return reading.current
+    if reading.replaced and reading.start is not None:
+        return (reading.old_final - previous) + (reading.current - reading.start)
+    return reading.current - previous
 
 
 class MonthStart(NamedTuple):
@@ -51,19 +74,21 @@ def reading_starts(months: Iterable[str], readings: Readings) -> Dict[str, Month
     """
     Where each month starts for one roommate: last month's reading, else the
     start reading entered for the month, else the last known reading (so a
-    skipped month's units are billed with the next reading).
+    skipped month's units are billed with the next reading). In a month the
+    meter was replaced the start reading is the new meter's, so it isn't used.
     """
     starts: Dict[str, MonthStart] = {}
     last_month = last_known = None
     for m in sorted(months):
-        current, start = readings.get(m, (None, None))
+        reading = Reading(*readings.get(m, ()))
+        current, start = reading.current, reading.start
         if last_month is not None:
             previous = last_month
-        elif start is not None:
+        elif start is not None and not reading.replaced:
             previous = start
         else:
             previous = last_known
-        starts[m] = MonthStart(previous, last_month is None, last_known)
+        starts[m] = MonthStart(previous, last_month is None and not reading.replaced, last_known)
         last_month = current
         last_known = current if current is not None else previous
     return starts
@@ -82,22 +107,33 @@ def reading_error(months: Iterable[str], before: Readings, after: Readings, mont
     """
     months = sorted(months)
 
-    def backwards(readings: Readings) -> Dict[str, Tuple[float, float]]:
+    old, new = Reading(*before.get(month, ())), Reading(*after.get(month, ()))
+    if new.replaced:
+        if new.current is None or new.start is None:
+            return ("A replaced meter needs all three: the old meter's last reading, the new meter's start "
+                    "and its reading at month end.")
+        if month in months and reading_starts(months, after)[month].previous is None:
+            return "There's no earlier reading of the old meter to count from. Enter only a start reading instead."
+    elif old.replaced and new.current is None:
+        if any(v is not None for m in months if m > month for v in after.get(m, ())):
+            return "Later readings count from the new meter, so correct this month instead of removing it."
+
+    def backwards(readings: Readings) -> Dict[str, Tuple[float, float, str]]:
         found = {}
         for m, start in reading_starts(months, readings).items():
-            current = readings.get(m, (None, None))[0]
-            if current is not None and start.previous is not None and current < start.previous:
-                found[m] = (current, start.previous)
+            problem = _backwards(Reading(*readings.get(m, ())), start.previous)
+            if problem:
+                found[m] = problem
         return found
 
     was = backwards(before)
-    for m, (current, previous) in backwards(after).items():
+    for m, (current, previous, what) in backwards(after).items():
         if m != month and m in was:
             continue
         end, start, name = _plain(current), _plain(previous), f"{month_name[int(m[5:7])]} {m[:4]}"
         if m == month:
-            return f"The {name} reading ({end}) can't be lower than where it starts ({start}). Check the meter."
-        return f"That would put the {name} reading ({end}) below where it starts ({start}). Check both readings."
+            return f"The {name} {what} ({end}) can't be lower than where it starts ({start}). Check the meter."
+        return f"That would put the {name} {what} ({end}) below where it starts ({start}). Check both readings."
 
     def without_start(readings: Readings) -> List[str]:
         return [m for m, start in reading_starts(months, readings).items()
@@ -125,6 +161,12 @@ def starts_to_keep(months: Iterable[str], readings: Readings, month: str) -> Dic
     meter would run backwards.
     """
     months = sorted(months)
+    if Reading(*readings.get(month, ())).replaced and any(
+        v is not None for m in months if m > month for v in readings.get(m, ())
+    ):
+        raise ValueError(
+            "A meter was replaced in this month and later readings count from the new one, so it can't be deleted."
+        )
     before = reading_starts(months, readings)
     left = [m for m in months if m != month]
     after = {m: v for m, v in readings.items() if m != month}
@@ -134,22 +176,39 @@ def starts_to_keep(months: Iterable[str], readings: Readings, month: str) -> Dic
         now, old = reading_starts(left, after)[m], before[m].previous
         if old is None or now.previous == old or not now.editable:
             continue
-        current, start = after.get(m, (None, None))
+        current, start, _ = Reading(*after.get(m, ()))
         unknown = now.previous is None and (current is not None or m == later[0])
         if start is not None or unknown:
             after[m], kept[m] = (current, old), old
 
     starts = reading_starts(left, after)
     for m in later:
-        current, now, old = after.get(m, (None, None))[0], starts[m].previous, before[m].previous
-        if current is None or now is None or current >= now:
-            continue
-        if old is None or current >= old:  # it was fine until now
+        reading, now, old = Reading(*after.get(m, ())), starts[m].previous, before[m].previous
+        name = f"{month_name[int(m[5:7])]} {m[:4]}"
+        if reading.replaced and now is None and old is not None:
             raise ValueError(
-                f"Deleting this month would put the {month_name[int(m[5:7])]} {m[:4]} reading below "
+                f"The meter replaced in {name} counts from this month's reading, so it can't be deleted."
+            )
+        if _backwards(reading, now) and not _backwards(reading, old):  # it was fine until now
+            raise ValueError(
+                f"Deleting this month would put the {name} reading below "
                 f"the one before it ({_plain(now)}). Correct that reading first."
             )
     return kept
+
+
+def _backwards(reading: Reading, previous: Optional[float]) -> Optional[Tuple[float, float, str]]:
+    """(reading, what it's below, which reading) when a meter ran backwards that month."""
+    if reading.current is None:
+        return None
+    if reading.replaced:
+        if previous is not None and reading.old_final < previous:
+            return reading.old_final, previous, "old meter's last reading"
+        if reading.start is not None and reading.current < reading.start:
+            return reading.current, reading.start, "new meter's reading"
+    elif previous is not None and reading.current < previous:
+        return reading.current, previous, "reading"
+    return None
 
 
 def _plain(value: float) -> str:
@@ -191,8 +250,9 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
             continue
         if not _roommate_is_active(name, month, roommates_df):
             continue
-        start = reading_starts(known_months, history[str(r["roommate"])])[month]
-        active_rows.append((name, float(r["current_reading"]), start.previous))
+        mine = history[str(r["roommate"])]
+        start = reading_starts(known_months, mine)[month]
+        active_rows.append((name, Reading(*mine[month]), start.previous))
 
     active_count = len(active_rows)
     if active_count == 0:
@@ -200,13 +260,9 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
 
     sum_sub_units = 0.0
     split_rows: List[Dict[str, Any]] = []
-    for name, current, previous in active_rows:
-        if previous is None:
-            # No prior or start reading => treat the whole current reading as
-            # consumption (a first month entered without a start reading).
-            sub_units = current
-        else:
-            sub_units = current - previous
+    for name, reading, previous in active_rows:
+        current = reading.current
+        sub_units = units_used(reading, previous)
         sum_sub_units += sub_units
         split_rows.append({
             "roommate": name,
@@ -499,7 +555,7 @@ def settle_through(data: HouseholdData) -> Tuple[Optional[str], List[Dict[str, A
         return None, []
 
     roommates, history = data.get_roommates(), data.readings_by_roommate()
-    read = {name: [m for m, (current, _) in by_month.items() if current is not None]
+    read = {name: [m for m, values in by_month.items() if values[0] is not None]
             for name, by_month in history.items()}
     missing = [(m, str(name)) for m in months for name in roommates["name"]
                if m not in read.get(str(name), []) and _roommate_is_active(str(name), m, roommates)]
@@ -576,14 +632,14 @@ def personal_dashboard(roommate: str, data: HouseholdData) -> Dict[str, Any]:
     recharges_df = data.get_recharges()
     mine = recharges_df[recharges_df["roommate"] == roommate]
 
-    starts = reading_starts(
-        data.get_months()["month"].astype(str).tolist(), data.readings_by_roommate().get(roommate, {})
-    )
+    history = data.readings_by_roommate().get(roommate, {})
+    starts = reading_starts(data.get_months()["month"].astype(str).tolist(), history)
     months = []
     for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
         previous, editable, fallback = starts[m]
         start = data.get_start_reading(m, roommate)
         current = data.get_reading(m, roommate)
+        reading = Reading(*history.get(m, ()))
         this_month = mine[mine["date"].astype(str).str.startswith(m)]
         is_dg = this_month["meter"] == "dg"
         paid_dg = float(this_month[is_dg]["amount"].sum())
@@ -597,7 +653,8 @@ def personal_dashboard(roommate: str, data: HouseholdData) -> Dict[str, Any]:
             "fallback_reading": fallback,
             "start_reading": start,
             "current_reading": current,
-            "sub_units": None if current is None else (current if previous is None else current - previous),
+            "old_meter_final": reading.old_final,
+            "sub_units": None if current is None else units_used(reading, previous),
             "is_active": _roommate_is_active(roommate, m, data.get_roommates()),
             "billed": False,
             "rate_per_unit": None,

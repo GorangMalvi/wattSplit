@@ -525,9 +525,15 @@ def delete_month(hid: UUID, month: str,
             return False
         by_roommate: Dict[int, Dict[str, tuple]] = {}
         for r in conn.execute(
-            "SELECT month, roommate_id, current_reading, start_reading FROM readings WHERE household_id = %s", (hid,)
+            f"""
+            SELECT r.month, r.roommate_id, r.current_reading, r.start_reading, {_OLD_METER_FINAL}
+            FROM readings r WHERE r.household_id = %s
+            """,
+            (hid,),
         ).fetchall():
-            by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (r["current_reading"], r["start_reading"])
+            by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (
+                r["current_reading"], r["start_reading"], r["old_meter_final"]
+            )
         for rid, readings in by_roommate.items():
             for later, start in keep_starts(months, readings, month).items():
                 conn.execute(
@@ -699,11 +705,18 @@ def accept_invite(code: str, user_id: str, email: Optional[str]) -> Dict[str, An
 # ---------------------------------------------------------------------------
 # Readings
 # ---------------------------------------------------------------------------
-READING_COLS = ["month", "roommate_id", "roommate", "current_reading", "start_reading"]
-_READING_SELECT = """
-    SELECT r.month, r.roommate_id, rm.name AS roommate, r.current_reading, r.start_reading
+READING_COLS = ["month", "roommate_id", "roommate", "current_reading", "start_reading", "old_meter_final"]
+# Via to_jsonb, not r.old_meter_final, so a backend deployed before that column
+# is added still reads (it's just null). Needs readings aliased as r.
+_OLD_METER_FINAL = "(to_jsonb(r) ->> 'old_meter_final')::double precision AS old_meter_final"
+_READING_SELECT = f"""
+    SELECT r.month, r.roommate_id, rm.name AS roommate, r.current_reading, r.start_reading, {_OLD_METER_FINAL}
     FROM readings r JOIN roommates rm ON rm.id = r.roommate_id
 """
+
+
+class SchemaBehind(Exception):
+    """The database doesn't have a column this needs yet."""
 
 
 def list_readings(hid: UUID, month: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -728,10 +741,10 @@ def previous_readings(hid: UUID, month: str) -> List[Dict[str, Any]]:
 
 
 def roommate_readings(hid: UUID, roommate_id: int) -> Dict[str, tuple]:
-    """Every month of the household -> the roommate's (month-end, start) reading, None where missing."""
+    """Every month of the household -> the roommate's readings (calc.Readings), None where missing."""
     rows = _fetch(
-        """
-        SELECT m.month, r.current_reading, r.start_reading
+        f"""
+        SELECT m.month, r.current_reading, r.start_reading, {_OLD_METER_FINAL}
         FROM months m
         LEFT JOIN readings r
           ON r.household_id = m.household_id AND r.month = m.month AND r.roommate_id = %s
@@ -739,35 +752,39 @@ def roommate_readings(hid: UUID, roommate_id: int) -> Dict[str, tuple]:
         """,
         (roommate_id, hid),
     )
-    return {r["month"]: (r["current_reading"], r["start_reading"]) for r in rows}
+    return {r["month"]: (r["current_reading"], r["start_reading"], r["old_meter_final"]) for r in rows}
 
 
 def set_reading(hid: UUID, month: str, roommate_id: int, **fields: Optional[float]) -> None:
     """
-    Set ``current_reading`` and/or ``start_reading`` (only the ones given; None
-    clears it). A row left with neither is removed.
+    Set ``current_reading``, ``start_reading`` and/or ``old_meter_final`` (only
+    the ones given; None clears it). A row left with neither reading is removed.
+    Raises SchemaBehind for old_meter_final before its column exists.
     """
-    cols = [c for c in ("current_reading", "start_reading") if c in fields]
+    cols = [c for c in ("current_reading", "start_reading", "old_meter_final") if c in fields]
     if not cols:
         return
     values = [None if fields[c] is None else float(fields[c]) for c in cols]
-    with _pool.connection() as conn, conn.transaction():
-        conn.execute(
-            f"""
-            INSERT INTO readings (household_id, month, roommate_id, {", ".join(cols)})
-            VALUES (%s, %s, %s, {", ".join(["%s"] * len(cols))})
-            ON CONFLICT (household_id, month, roommate_id)
-            DO UPDATE SET {", ".join(f"{c} = excluded.{c}" for c in cols)}
-            """,
-            (hid, month, roommate_id, *values),
-        )
-        conn.execute(
-            """
-            DELETE FROM readings WHERE household_id = %s AND month = %s AND roommate_id = %s
-              AND current_reading IS NULL AND start_reading IS NULL
-            """,
-            (hid, month, roommate_id),
-        )
+    try:
+        with _pool.connection() as conn, conn.transaction():
+            conn.execute(
+                f"""
+                INSERT INTO readings (household_id, month, roommate_id, {", ".join(cols)})
+                VALUES (%s, %s, %s, {", ".join(["%s"] * len(cols))})
+                ON CONFLICT (household_id, month, roommate_id)
+                DO UPDATE SET {", ".join(f"{c} = excluded.{c}" for c in cols)}
+                """,
+                (hid, month, roommate_id, *values),
+            )
+            conn.execute(
+                """
+                DELETE FROM readings WHERE household_id = %s AND month = %s AND roommate_id = %s
+                  AND current_reading IS NULL AND start_reading IS NULL
+                """,
+                (hid, month, roommate_id),
+            )
+    except errors.UndefinedColumn as exc:
+        raise SchemaBehind() from exc
 
 
 def delete_reading(hid: UUID, month: str, roommate_id: int) -> bool:
@@ -1074,14 +1091,12 @@ class HouseholdData:
         return self.readings[self.readings["month"] == month]
 
     def readings_by_roommate(self) -> Dict[str, Dict[str, tuple]]:
-        """Roommate name -> month -> (month-end, start) reading, None where missing."""
+        """Roommate name -> month -> readings (calc.Readings), None where missing."""
         found: Dict[str, Dict[str, tuple]] = {}
         df = self.readings
-        for month, name, current, start in zip(df["month"], df["roommate"], df["current_reading"], df["start_reading"]):
-            found.setdefault(str(name), {})[str(month)] = (
-                float(current) if pd.notna(current) else None,
-                float(start) if pd.notna(start) else None,
-            )
+        for month, name, *values in zip(df["month"], df["roommate"], df["current_reading"], df["start_reading"],
+                                        df["old_meter_final"]):
+            found.setdefault(str(name), {})[str(month)] = tuple(float(v) if pd.notna(v) else None for v in values)
         return found
 
     def get_reading(self, month: str, roommate: str) -> Optional[float]:

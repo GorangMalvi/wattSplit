@@ -112,6 +112,15 @@ def generate_month_report(month: str, data: HouseholdData) -> bytes:
                 _format_money(cell)
         row += 1
 
+    # A replaced meter: previous and current are on different meters, so say so.
+    history = data.readings_by_roommate()
+    for r in result["roommates"]:
+        reading = calc.Reading(*history.get(r["name"], {}).get(month, ()))
+        if reading.replaced:
+            ws.cell(row, 1, f"{r['name']}'s meter was replaced: the old one ended at {reading.old_final:g}, "
+                            f"the new one started at {reading.start:g}.")
+            row += 1
+
     # Running balances
     row += 1
     ws.cell(row, 1, "Running Balances (cumulative up to this month)").font = Font(bold=True, size=12)

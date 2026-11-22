@@ -162,7 +162,8 @@ export const getHistory = () => api.get('/history').then((res) => res.data);
 
 // Readings
 // fields: { current_reading, start_reading } (either or both; null clears);
-// new_meter: true confirms a start_reading of 0.
+// new_meter: true confirms a start_reading of 0. old_meter_final: the meter was
+// replaced that month (then the other two are the new meter's).
 // A plain number means the month-end reading.
 export const updateReading = (month, roommateId, fields) =>
   api
