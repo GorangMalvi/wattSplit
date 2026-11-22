@@ -358,6 +358,12 @@ function SettleUpCard({ refreshKey, myId, isOwner = false, personal = false, onC
   };
 
   if (!plan) return error ? <ErrorAlert message={error} onRetry={retry} /> : null;
+  // The web app deploys faster than the backend: an older one has no verification.
+  if (!plan.positions || !plan.waiting_for) {
+    return (
+      <div className="card text-sm text-slate-500">Settle up is being updated. Check back in a few minutes.</div>
+    );
+  }
 
   const involvesMe = (row) => !personal || row.from_roommate_id === myId || row.to_roommate_id === myId;
   const payments = plan.settlements.filter(involvesMe);
