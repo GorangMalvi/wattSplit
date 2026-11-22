@@ -13,11 +13,12 @@ import BalanceCard from './BalanceCard';
 import ErrorAlert from './ErrorAlert';
 import LoadingSpinner from './LoadingSpinner';
 import MeterBadge, { METERS } from './MeterBadge';
+import SettleUpCard from './SettleUpCard';
 import SummaryCard from './SummaryCard';
 import VoicePaymentButton, { canRecord } from './VoicePaymentButton';
 
 // First visit: "which roommate are you?"
-function LinkRoommateCard({ roommates, onLinked }) {
+function LinkRoommateCard({ roommates, isOwner = false, onLinked }) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -42,7 +43,13 @@ function LinkRoommateCard({ roommates, onLinked }) {
         reading and payments.
       </p>
       {error && <ErrorAlert message={error} />}
-      {available.length > 0 && (
+      {!isOwner && available.length > 0 && (
+        <p className="mb-5 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+          Already listed ({available.map((r) => r.name).join(', ')})? Ask the household owner to invite you by
+          email, then open the link. Only add yourself below if your name isn&apos;t there.
+        </p>
+      )}
+      {isOwner && available.length > 0 && (
         <div className="mb-5 flex flex-wrap gap-2">
           {available.map((r) => (
             <button
@@ -103,6 +110,7 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   const selected = options.find((m) => m.month === month);
   const [value, setValue] = useState('');
   const [startValue, setStartValue] = useState('');
+  const [newMeter, setNewMeter] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -111,6 +119,7 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   useEffect(() => {
     setValue(stored);
     setStartValue(storedStart);
+    setNewMeter(false);
     setError(null);
   }, [month, stored, storedStart]);
 
@@ -125,8 +134,9 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   const askStart = Boolean(selected?.previous_editable);
   const reading = parseReading(value);
   const startReading = askStart ? parseReading(startValue) : null;
-  const previous = askStart ? startReading : selected?.previous_reading;
-  const units = reading === null ? null : previous == null ? reading : reading - previous;
+  const fallback = selected?.fallback_reading ?? null; // last known reading, used without a start
+  const previous = askStart ? (startReading ?? fallback) : selected?.previous_reading;
+  const units = reading === null || previous == null ? null : reading - previous;
 
   // Only what changed: the month-end reading and/or the start reading (blank clears it).
   const changes = {};
@@ -135,7 +145,10 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
     if (startReading !== null && startReading !== selected?.start_reading) changes.start_reading = startReading;
     if (startValue === '' && selected?.start_reading != null) changes.start_reading = null;
   }
-  const canSave = Object.keys(changes).length > 0;
+  const startMissing = changes.current_reading !== undefined && previous == null;
+  const startIsZero = changes.start_reading === 0;
+  if (startIsZero && newMeter) changes.new_meter = true;
+  const canSave = Object.keys(changes).length > 0 && !startMissing && (!startIsZero || newMeter);
 
   const save = async (e) => {
     e.preventDefault();
@@ -206,6 +219,11 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
         {askStart ? (
           previous == null ? (
             <>No reading last month: enter your meter at the start of this month.</>
+          ) : startReading === null ? (
+            <>
+              No reading last month, so counting from your last known reading:{' '}
+              <span className="font-medium">{formatNumber(previous)}</span>
+            </>
           ) : (
             <>
               Start of month: <span className="font-medium">{formatNumber(previous)}</span>
@@ -226,6 +244,17 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
           </>
         )}
       </p>
+      {startMissing && (
+        <p className="text-sm text-amber-700">
+          Enter the start reading too: what your meter showed at the start of the month, or when you moved in.
+        </p>
+      )}
+      {startIsZero && (
+        <label className="flex items-center gap-2 text-sm text-amber-700">
+          <input type="checkbox" checked={newMeter} onChange={(e) => setNewMeter(e.target.checked)} />
+          This is a brand-new meter that starts at 0
+        </label>
+      )}
       {units !== null && units < 0 && (
         <p className="text-sm text-rose-600">
           This is lower than the start of the month. Check the meter before saving.
@@ -410,7 +439,7 @@ function UsageChart({ months }) {
 
 // active: the tab is showing. Each time it's shown again the data refreshes in
 // the background (the Household tab may have changed it) without a spinner.
-function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = false }) {
+function MyDashboard({ active = true, isOwner = false, roommates, onLinkChange, voiceEnabled = false }) {
   const [dash, setDash] = useState(null);
   const [error, setError] = useState(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -496,7 +525,10 @@ function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = fa
         </div>
         {confirmUnlink ? (
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-slate-600">Unlink your login from {roommate.name}?</span>
+            <span className="text-slate-600">
+              Unlink your login from {roommate.name}?
+              {!isOwner && " You'll need the owner's invite to link again."}
+            </span>
             <button onClick={unlink} disabled={unlinking} className="btn-danger">
               Unlink
             </button>
@@ -535,6 +567,8 @@ function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = fa
           subtext={`Billed so far: ${formatMoney(dash.total_bill_cumulative)}`}
         />
       </div>
+
+      <SettleUpCard personal myId={roommate.id} refreshKey={dash} onChanged={load} />
 
       <div className="card">
         <h3 className="mb-1 text-lg font-semibold text-slate-900">By meter</h3>

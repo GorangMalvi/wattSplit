@@ -32,7 +32,10 @@ main_reading_start  = previous month main_reading_end OR user input
 main_units          = main_reading_end - main_reading_start
 
 for each active roommate:
-  sub_units_i       = current_reading_i - previous_reading_i
+  previous_reading_i = last month's reading, else this month's start reading,
+                       else the last known reading (a skipped month)
+  sub_units_i       = current_reading_i - previous_reading_i   # readings that make this negative are rejected
+                                                               # a first reading needs a start reading; 0 = new meter, confirmed
 common_units        = main_units - sum(sub_units_i)
 common_share        = common_units / count(active_roommates)
 total_units_i       = sub_units_i + common_share
@@ -41,6 +44,18 @@ energy_charge_i     = total_units_i * rate
 dg_share_i          = dg_bill / count(active_roommates)
 total_bill_i        = energy_charge_i + dg_share_i
 balance_i           = total_bill_i - recharges_received_i
+```
+
+## Settle up
+```
+verifying --received (receiver's own login)--> received --undo (both agree)--> undone
+          --not received (with a reason)-----> not_received
+          --cancel (payer / who sent it)-----> cancelled
+
+only `received` changes balances; `verifying` is reserved from what's suggested
+a payment can't be more than the payer has left to pay, or the receiver left to get
+settle up works up to the last month with a bill and no missing readings
+  (a skipped reading counts as caught up by a later one)
 ```
 
 ## Tech Stack

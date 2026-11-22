@@ -58,6 +58,27 @@ function clearInviteCode() {
   }
 }
 
+// ?household=ID from a settle-up email: open that household on My dashboard.
+// The link only opens the app; it never confirms anything.
+function takeHouseholdLink() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('household');
+    if (!id) return;
+    params.delete('household');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + (query ? `?${query}` : '') + window.location.hash
+    );
+    storeHousehold(id);
+    localStorage.setItem('wattsplit.view', 'mine');
+  } catch {
+    // Storage unavailable: the app opens on its first household.
+  }
+}
+
 function CenteredMessage({ children }) {
   return <div className="flex min-h-screen items-center justify-center p-4">{children}</div>;
 }
@@ -92,6 +113,7 @@ function Root() {
   const [error, setError] = useState(null);
   // Invite link: its code, who it's for (shown before sign-in), and the outcome.
   const [inviteCode, setInviteCode] = useState(takeInviteCode);
+  useState(takeHouseholdLink); // once, before households load
   const [invite, setInvite] = useState(null);
   const [notice, setNotice] = useState(null);
 
@@ -261,7 +283,17 @@ function Root() {
         </div>
       </div>
       <Notice notice={notice} onClose={() => setNotice(null)} />
-      <App key={active.id} />
+      <App
+        key={active.id}
+        household={active}
+        onHouseholdDeleted={() => {
+          const rest = households.filter((h) => h.id !== active.id);
+          setHouseholds(rest);
+          setNotice({ tone: 'success', text: `Deleted "${active.name}".` });
+          if (rest.length > 0) selectHousehold(rest[0].id);
+          else setActiveId(null);
+        }}
+      />
     </>
   );
 }

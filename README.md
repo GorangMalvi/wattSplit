@@ -10,7 +10,8 @@ Split a shared flat's electricity bill fairly from sub-meter readings, common un
 ## How it works
 - Users sign in with a one-time code emailed by Supabase Auth (no passwords; the account is created on first sign-in). Each user creates a **household** (a flat) or joins one with its 8-character invite code; all roommates, months, readings and recharges belong to a household.
 - The frontend sends the Supabase access token and the chosen household (`X-Household-Id`) with every API call. FastAPI verifies the token and checks membership before touching any data.
-- Tables have Row Level Security enabled, so the public anon key cannot read another household's data through Supabase's REST API.
+- Tables have Row Level Security enabled, so the public anon key cannot read another household's data through Supabase's REST API. Bill data is read-only there: every write goes through the backend and its checks.
+- **Deploying a schema change**: apply it to the database before merging to `main`, which Render deploys automatically.
 
 ## Supabase setup (once)
 1. Copy `.env.example` to `.env` and fill in, from your Supabase project:
@@ -125,17 +126,19 @@ Invite links and emails to flatmates need a public web address and a verified se
 ## Features
 - Passwordless sign-in with an emailed one-time code; households with invite codes
 - **Invite roommates by email**: the owner adds a roommate with an email (or clicks Invite). They get a link and a personal code; signing in with that email joins the household and links them to that roommate. The owner can copy the link/code, resend or revoke; invites expire after 14 days
-- Manage roommates (join/leave months, active flag)
+- Manage roommates (join/leave months, active flag). Unticking Active sets the leave month to their last month with a reading, so past bills stay the same
 - Create months; the main meter start reading carries over from the previous month
 - **Prepaid meter balances by hand**: each month can take the meter's opening balance, recharge and closing balance; the Monthly Bill is then worked out as opening + recharge − closing, and a new month's opening balance carries over from the last closing balance
 - **Import meter report**: the owner uploads the prepaid meter's Monthly Consumption Report (.xlsx); each month's main meter readings and bill are filled in. Bill = opening balance + recharge − closing balance (everything the meter deducted), rate = bill ÷ main units; the closing balance carries forward
 - **Voice payments**: on My dashboard, tap *Say it* and say the payment in English, Hindi or Hinglish ("500 rupees yesterday, DG", "kal dedh hazaar ka recharge kiya"). [60db](https://docs.60db.ai) transcribes it and the app fills in the amount, date and meter; nothing is saved until you check it and tap *Add payment*. Needs `SIXTYDB_API_KEY` on the backend (the button is hidden without it); limited to 5 recordings a minute per person. Try the parser alone: `python -m app.voice "maine kal paanch sau ka DG recharge kiya"`
-- Sub-meter readings carry forward: last month's reading is this month's start. For a first month (no reading last month) enter a **start reading**, so only the units used that month are billed
+- Sub-meter readings carry forward: last month's reading is this month's start. For a first month (no reading last month) enter a **start reading**, so only the units used that month are billed. After a skipped month, units count from the last known reading unless a start reading is entered. A reading that would make a meter run backwards is rejected, and so is a first month-end reading without a start reading (a start of 0 has to be confirmed as a brand-new meter)
 - Enter per-room meter readings and recharges/payments; each payment is for the **Main** meter or the **DG**, and balances are tracked per meter (energy charge vs main payments, DG share vs DG payments)
 - Auto-calculate the split, including common units and DG charges
-- **My dashboard**: each flatmate links their login to their roommate, then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
-- Permissions: the household owner edits everything; other members edit only their own readings and payments
-- Balances to date (all bills so far minus all payments)
+- **My dashboard**: each flatmate links their login to their roommate (the owner picks their own name; anyone else joins an existing name with the owner's invite, or adds themselves as a new one), then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
+- Permissions: the household owner edits everything except confirming a payment for someone else; other members edit only their own readings and payments
+- **Settle up with verification**: shows who pays whom, up to the last month with a bill and everyone's readings. The payer enters an amount (part payments are fine) and taps *I paid*; it stays **In verification**, reserved but not counted, until the receiver signs in on their own login and marks it received, or not received with a reason. Nobody else can confirm it, the owner included. A receiver without a login confirms after joining with the owner's invite. Undoing a received payment takes both roommates. Both are emailed, and with `SETTLEMENT_REMINDERS=1` (live server only) the receiver is reminded every 3 days, up to 5 times
+- **Delete a month or the household** (owner). Deleting a month keeps payments; the month after carries on from the one before, or keeps the readings it started from when there is none
+- Balances to date (all bills so far minus all received payments)
 - Download a monthly Excel report
 
 ## Project Structure
@@ -147,6 +150,8 @@ Electricity_bill_dist/
 │       ├── auth.py         # Supabase token verification
 │       ├── db.py           # Postgres access, household-scoped
 │       ├── calc.py         # Bill split math
+│       ├── settlements.py  # Who may confirm, cancel or undo a settle-up payment
+│       ├── settlement_mail.py # Settle-up emails and reminders
 │       ├── export.py       # Excel report
 │       ├── schema.sql      # Tables + RLS policies
 │       └── init_schema.py  # Applies schema.sql

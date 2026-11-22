@@ -142,6 +142,8 @@ class MonthDetail(MonthOut):
     readings: List[ReadingOut] = []
     # Last month's month-end readings: where this month starts for each roommate.
     previous_readings: List[PreviousReading] = []
+    # The last known reading before this month: its start when there's neither of the above.
+    fallback_readings: List[PreviousReading] = []
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +165,7 @@ class ReadingUpdate(BaseModel):
     """Send either or both; a field sent as null is cleared."""
     current_reading: Optional[float] = Field(None, ge=0)
     start_reading: Optional[float] = Field(None, ge=0)
+    new_meter: bool = Field(False, description="Confirms a start_reading of 0: the meter is brand new")
 
     @model_validator(mode="after")
     def something_to_set(self) -> "ReadingUpdate":
@@ -240,6 +243,8 @@ class RunningBalance(BaseModel):
     dg_recharges_cumulative: float
     dg_balance: float
     settled_cumulative: float = 0.0  # paid to (+) / received from (-) roommates
+    units_cumulative: float = 0.0  # units billed: own meter + share of common
+    own_units_cumulative: float = 0.0
 
 
 class CalculationSummary(BaseModel):
@@ -317,6 +322,7 @@ class DashboardMonth(BaseModel):
     previous_reading: Optional[float]
     previous_editable: bool = Field(..., description="No reading last month: start_reading can be set")
     start_reading: Optional[float]
+    fallback_reading: Optional[float] = Field(None, description="Last known reading, used without a start_reading")
     current_reading: Optional[float]
     sub_units: Optional[float]
     is_active: bool
@@ -349,6 +355,8 @@ class Dashboard(BaseModel):
     dg_recharges_cumulative: float
     dg_balance: float
     settled_cumulative: float = 0.0
+    units_cumulative: float = 0.0
+    own_units_cumulative: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -357,11 +365,15 @@ class Dashboard(BaseModel):
 class SettlementCreate(BaseModel):
     from_roommate_id: int
     to_roommate_id: int
-    amount: float = Field(..., gt=0)
+    amount: float = Field(..., ge=0.01, allow_inf_nan=False)
     settlement_date: Optional[date] = Field(None, alias="date")
-    notes: Optional[str] = ""
+    notes: Optional[str] = Field("", max_length=200)
 
     model_config = {"populate_by_name": True}
+
+
+class SettlementResponse(BaseModel):
+    reason: Optional[str] = Field(None, max_length=200, description="Required for not_received")
 
 
 class SettlementOut(BaseModel):
@@ -373,6 +385,29 @@ class SettlementOut(BaseModel):
     to_roommate: str
     amount: float
     notes: str
+    status: Literal["verifying", "received", "not_received", "cancelled", "undone"]
+    receiver_joined: bool  # False: waits until the receiver joins with the owner's invite
+    emailed: bool
+    responded_by_email: Optional[str] = None  # masked
+    reject_reason: Optional[str] = None
+    undo_side: Optional[Literal["payer", "receiver"]] = None
+    actions: List[str] = Field(..., description="What the signed-in user may do (settlements.Action)")
+
+
+class SettlePosition(BaseModel):
+    roommate_id: int
+    name: str
+    balance: float  # owes (+) / is owed (-), until payments are received
+    waiting_out: float
+    waiting_in: float
+    to_pay: float  # left once what's waiting is counted
+    to_receive: float
+
+
+class SettleWaitingFor(BaseModel):
+    month: str
+    missing: List[str]
+    needs_bill: bool
 
 
 class Transfer(BaseModel):
@@ -383,10 +418,28 @@ class Transfer(BaseModel):
     amount: float
 
 
+class FuturePayment(BaseModel):
+    id: int
+    date: str
+    roommate: str
+    amount: float
+    meter: str
+
+
 class SettleUp(BaseModel):
-    """Payments that bring every balance to zero, and the settlements recorded so far."""
+    """Payments that leave everyone even, as of the last complete month, and the settlements recorded so far."""
     transfers: List[Transfer]
-    # Electricity nobody has recorded paying for, shared equally in the transfers.
+    positions: List[SettlePosition] = []
+    waiting_for: List[SettleWaitingFor] = []
+    # Electricity nobody has recorded paying for, shared equally in the transfers
+    # (0 when every payment is recorded).
     unpaid_total: float
     unpaid_each: float
+    # Left in the meter after through_month: prepaid, so it stays as credit.
+    meter_balance: float = 0.0
+    through_month: Optional[str] = None
+    # Paid after through_month, for a month not billed yet: not settled now.
+    later_payments_total: float = 0.0
+    # Dated after today: probably a wrong date.
+    future_payments: List[FuturePayment] = []
     settlements: List[SettlementOut]

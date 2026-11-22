@@ -68,6 +68,13 @@ export const getMonth = (month) => api.get(`/months/${month}`).then((res) => res
 
 export const createMonth = (payload) => api.post('/months', payload).then((res) => res.data);
 
+// Owner: delete a month and its meter readings (payments stay: they're by date).
+export const deleteMonth = (month) => api.delete(`/months/${month}`);
+
+// Owner: delete the active household and everything in it. confirmName: its name, typed.
+export const deleteHousehold = (confirmName) =>
+  api.delete('/household', { params: { confirm_name: confirmName } });
+
 export const updateMonth = (month, payload) =>
   api.put(`/months/${month}`, payload).then((res) => res.data);
 
@@ -133,14 +140,18 @@ export const voicePayment = (audio, todayDate) =>
     })
     .then((res) => res.data);
 
-// Settling up: who pays whom so every balance reaches zero ({ transfers,
-// unpaid_total, unpaid_each, settlements }), and recording those payments.
+// Settling up: who pays whom so everyone ends up even ({ transfers, positions,
+// settlements, waiting_for, ... }). A payment sent waits in verification until
+// the receiver marks it received.
 export const getSettleUp = () => api.get('/settle-up').then((res) => res.data);
 
 export const createSettlement = (payload) =>
   api.post('/settlements', payload).then((res) => res.data);
 
-export const deleteSettlement = (id) => api.delete(`/settlements/${id}`);
+// action: received | not_received (with a reason) | cancel | request_undo |
+// agree_undo | decline_undo | withdraw_undo
+export const respondSettlement = (id, action, reason) =>
+  api.post(`/settlements/${id}/${action}`, { reason }).then((res) => res.data);
 
 // Calculated split + balances for a month
 export const getCalculate = (month) =>
@@ -150,7 +161,8 @@ export const getCalculate = (month) =>
 export const getHistory = () => api.get('/history').then((res) => res.data);
 
 // Readings
-// fields: { current_reading, start_reading } (either or both; null clears).
+// fields: { current_reading, start_reading } (either or both; null clears);
+// new_meter: true confirms a start_reading of 0.
 // A plain number means the month-end reading.
 export const updateReading = (month, roommateId, fields) =>
   api

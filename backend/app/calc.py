@@ -3,8 +3,8 @@ Bill-splitting logic per the spec formula.
 """
 from __future__ import annotations
 
-from calendar import monthrange
-from typing import Any, Dict, List, Optional, Tuple
+from calendar import month_name, monthrange
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 
@@ -27,20 +27,133 @@ def _roommate_is_active(roommate: str, month: str, roommates_df: pd.DataFrame) -
     if row.empty:
         return True  # Default to active if not in registry.
     r = row.iloc[0]
-    if not bool(r.get("is_active", True)):
-        # If a leave_date is set, allow participation up to that month.
-        leave = str(r.get("leave_date") or "").strip()
-        if leave and month <= leave:
-            return True
-        return False
-
     join = str(r.get("join_date") or "").strip()
     leave = str(r.get("leave_date") or "").strip()
     if join and month < join:
         return False
     if leave and month > leave:
         return False
-    return True
+    # Inactive: only up to the month they left.
+    return bool(r.get("is_active", True)) or bool(leave)
+
+
+# One roommate's readings: month -> (month-end reading, start reading).
+Readings = Dict[str, Tuple[Optional[float], Optional[float]]]
+
+
+class MonthStart(NamedTuple):
+    previous: Optional[float]  # where the month's units are counted from
+    editable: bool             # no reading last month, so a start reading applies
+    fallback: Optional[float]  # the last known reading, used without a start reading
+
+
+def reading_starts(months: Iterable[str], readings: Readings) -> Dict[str, MonthStart]:
+    """
+    Where each month starts for one roommate: last month's reading, else the
+    start reading entered for the month, else the last known reading (so a
+    skipped month's units are billed with the next reading).
+    """
+    starts: Dict[str, MonthStart] = {}
+    last_month = last_known = None
+    for m in sorted(months):
+        current, start = readings.get(m, (None, None))
+        if last_month is not None:
+            previous = last_month
+        elif start is not None:
+            previous = start
+        else:
+            previous = last_known
+        starts[m] = MonthStart(previous, last_month is None, last_known)
+        last_month = current
+        last_known = current if current is not None else previous
+    return starts
+
+
+def reading_error(months: Iterable[str], before: Readings, after: Readings, month: str) -> Optional[str]:
+    """
+    Why changing ``month`` from ``before`` to ``after`` can't be saved, if it
+    can't: the meter would run backwards in that month, or in a later one that
+    was fine until now. Months that were already backwards don't block the
+    change, so old mistakes can be corrected one month at a time.
+
+    Likewise a month-end reading needs somewhere to count from: a first one
+    can't be saved without a start reading, and a change can't take away what a
+    later month counts from. Months saved before this rule stay as they are.
+    """
+    months = sorted(months)
+
+    def backwards(readings: Readings) -> Dict[str, Tuple[float, float]]:
+        found = {}
+        for m, start in reading_starts(months, readings).items():
+            current = readings.get(m, (None, None))[0]
+            if current is not None and start.previous is not None and current < start.previous:
+                found[m] = (current, start.previous)
+        return found
+
+    was = backwards(before)
+    for m, (current, previous) in backwards(after).items():
+        if m != month and m in was:
+            continue
+        end, start, name = _plain(current), _plain(previous), f"{month_name[int(m[5:7])]} {m[:4]}"
+        if m == month:
+            return f"The {name} reading ({end}) can't be lower than where it starts ({start}). Check the meter."
+        return f"That would put the {name} reading ({end}) below where it starts ({start}). Check both readings."
+
+    def without_start(readings: Readings) -> List[str]:
+        return [m for m, start in reading_starts(months, readings).items()
+                if start.previous is None and readings.get(m, (None, None))[0] is not None]
+
+    had_none = without_start(before)
+    end_changed = before.get(month, (None, None))[0] != after.get(month, (None, None))[0]
+    for m in without_start(after):
+        name = f"{month_name[int(m[5:7])]} {m[:4]}"
+        if m == month and (end_changed or m not in had_none):
+            return (f"Enter the start reading for {name} first: what the meter showed "
+                    "at the start of the month, or on moving in.")
+        if m != month and m not in had_none:
+            return f"The {name} reading is counted from this one, so correct it instead of removing it."
+    return None
+
+
+def starts_to_keep(months: Iterable[str], readings: Readings, month: str) -> Dict[str, float]:
+    """
+    Start readings to save so that deleting ``month`` is safe, for one roommate.
+
+    A later month normally carries on from the month before the deleted one.
+    When there's no reading to carry on from, or an old start reading would
+    take over, it keeps counting from where it did. Raises ValueError when a
+    meter would run backwards.
+    """
+    months = sorted(months)
+    before = reading_starts(months, readings)
+    left = [m for m in months if m != month]
+    after = {m: v for m, v in readings.items() if m != month}
+    later = [m for m in left if m > month]
+    kept: Dict[str, float] = {}
+    for m in later:
+        now, old = reading_starts(left, after)[m], before[m].previous
+        if old is None or now.previous == old or not now.editable:
+            continue
+        current, start = after.get(m, (None, None))
+        unknown = now.previous is None and (current is not None or m == later[0])
+        if start is not None or unknown:
+            after[m], kept[m] = (current, old), old
+
+    starts = reading_starts(left, after)
+    for m in later:
+        current, now, old = after.get(m, (None, None))[0], starts[m].previous, before[m].previous
+        if current is None or now is None or current >= now:
+            continue
+        if old is None or current >= old:  # it was fine until now
+            raise ValueError(
+                f"Deleting this month would put the {month_name[int(m[5:7])]} {m[:4]} reading below "
+                f"the one before it ({_plain(now)}). Correct that reading first."
+            )
+    return kept
+
+
+def _plain(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -67,13 +180,8 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
 
     roommates_df = data.get_roommates()
 
-    prev_month = data.get_previous_month(month)
-    prev_readings: Dict[str, float] = {}
-    if prev_month:
-        prev_df = data.get_readings(prev_month)
-        for _, r in prev_df.iterrows():
-            if pd.notna(r["current_reading"]):
-                prev_readings[str(r["roommate"])] = float(r["current_reading"])
+    known_months = data.get_months()["month"].astype(str).tolist()
+    history = data.readings_by_roommate()
 
     # Active roommates = those with a current reading and still active this month.
     active_rows = []
@@ -83,11 +191,8 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
             continue
         if not _roommate_is_active(name, month, roommates_df):
             continue
-        # Start of the month: last month's reading, else the start reading entered.
-        start = r.get("start_reading")
-        if name not in prev_readings and start is not None and pd.notna(start):
-            prev_readings[name] = float(start)
-        active_rows.append((name, float(r["current_reading"])))
+        start = reading_starts(known_months, history[str(r["roommate"])])[month]
+        active_rows.append((name, float(r["current_reading"]), start.previous))
 
     active_count = len(active_rows)
     if active_count == 0:
@@ -95,8 +200,7 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
 
     sum_sub_units = 0.0
     split_rows: List[Dict[str, Any]] = []
-    for name, current in active_rows:
-        previous = prev_readings.get(name)
+    for name, current, previous in active_rows:
         if previous is None:
             # No prior or start reading => treat the whole current reading as
             # consumption (a first month entered without a start reading).
@@ -177,17 +281,20 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
     return summary, split_rows
 
 
-def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Dict[str, Any]]:
+def running_balances(data: HouseholdData, upto: Optional[str] = None,
+                     all_settlements: bool = False) -> List[Dict[str, Any]]:
     """
-    Cumulative bill, payments and balance per roommate: the sum of every
+    Cumulative bill, units, payments and balance per roommate: the sum of every
     month's split up to ``upto`` (YYYY-MM) and every recharge dated on or
     before the end of that month. ``upto=None`` means all months and all
-    recharges so far.
+    recharges so far. ``all_settlements`` counts every recorded settle-up
+    payment whatever its date (settling up happens after the bills).
     """
     totals: Dict[str, Dict[str, float]] = {}
 
     def entry(name: str) -> Dict[str, float]:
-        return totals.setdefault(name, {"main_bill": 0.0, "dg_bill": 0.0, "main": 0.0, "dg": 0.0, "settled": 0.0})
+        return totals.setdefault(name, {"main_bill": 0.0, "dg_bill": 0.0, "main": 0.0, "dg": 0.0, "settled": 0.0,
+                                        "units": 0.0, "own_units": 0.0})
 
     for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
         if upto is not None and m > upto:
@@ -200,6 +307,8 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
             e = entry(row["roommate"])
             e["main_bill"] += row["energy_charge"]
             e["dg_bill"] += row["dg_share"]
+            e["units"] += row["total_units"]
+            e["own_units"] += row["sub_units"]
 
     last_day = _month_end_date(upto) if upto is not None else None
     for _, rec in data.get_recharges().iterrows():
@@ -213,7 +322,9 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
     # has been repaid it. Counted against the main meter (balances by meter
     # still add up to the total).
     for s in getattr(data, "settlement_rows", []):
-        if last_day is not None and s["date"] > last_day:
+        if s.get("status", "received") != "received":
+            continue  # in verification, not received, cancelled or undone
+        if last_day is not None and not all_settlements and s["date"] > last_day:
             continue
         amount = float(s["amount"])
         entry(s["from_roommate"])["settled"] += amount
@@ -233,6 +344,9 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Di
             "total_recharges_cumulative": recharges,
             # Paid to (+) or received from (-) other roommates when settling up.
             "settled_cumulative": settled,
+            # Units billed (own meter + share of common) and own meter alone.
+            "units_cumulative": round(t["units"], 2),
+            "own_units_cumulative": round(t["own_units"], 2),
             "balance": round(total_bill - recharges - settled, 2),
             "main_bill_cumulative": main_bill,
             "main_recharges_cumulative": main_paid,
@@ -293,32 +407,66 @@ def calculate_month(month: str, data: HouseholdData) -> Dict[str, Any]:
     }
 
 
-def settle_up(balances: List[Dict[str, Any]]) -> Dict[str, Any]:
+def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0,
+              waiting: Iterable[Dict[str, Any]] = ()) -> Dict[str, Any]:
     """
     Who pays whom so that every balance ends at zero.
 
     ``balances``: household_balances rows (``roommate_id``, ``name``,
-    ``balance``; positive = owes). They needn't add up to zero: electricity
-    nobody has recorded paying for (the meter's starting balance, recharges
-    not entered in the app) leaves a gap. The gap is shared equally, then the
-    fewest payments are found by matching the biggest debtor with the biggest
-    creditor until all are settled.
+    ``balance``; positive = owes). With every payment recorded, they add up
+    to minus ``meter_balance``: money still in the meter is prepaid
+    electricity, and stays as credit for whoever paid it in. Anything beyond
+    that is a gap (the meter's starting balance, recharges not entered in the
+    app), shared equally. Then the biggest debtor pays the biggest creditor
+    until nobody owes, which takes the fewest payments.
+
+    ``waiting``: payments in verification. They don't change what anyone owes
+    yet, but they're reserved, so only the rest is suggested.
     """
     people = [b for b in balances if b.get("roommate_id") is not None]
     if not people:
-        return {"transfers": [], "unpaid_total": 0.0, "unpaid_each": 0.0}
-    gap = round(sum(b["balance"] for b in people), 2)
+        return {"transfers": [], "positions": [], "unpaid_total": 0.0, "unpaid_each": 0.0,
+                "meter_balance": round(meter_balance, 2)}
+    gap = round(sum(b["balance"] for b in people) + meter_balance, 2)
+    if abs(gap) <= 0.01 * len(people):
+        gap = 0.0  # each balance is rounded to paise: up to a paisa each is rounding, not a gap
     each = gap / len(people)
     owes = {b["roommate_id"]: b["balance"] - each for b in people}
     names = {b["roommate_id"]: b["name"] for b in people}
+
+    owed_now = dict(owes)
+    waiting_out: Dict[int, float] = {}
+    waiting_in: Dict[int, float] = {}
+    for w in waiting:
+        payer, receiver, amount = w["from_roommate_id"], w["to_roommate_id"], float(w["amount"])
+        for rid, name in ((payer, w["from_roommate"]), (receiver, w["to_roommate"])):
+            names.setdefault(rid, name)
+            owed_now.setdefault(rid, 0.0)
+            owes.setdefault(rid, 0.0)
+        waiting_out[payer] = waiting_out.get(payer, 0.0) + amount
+        waiting_in[receiver] = waiting_in.get(receiver, 0.0) + amount
+        owes[payer] -= amount
+        owes[receiver] += amount
+    positions = [
+        {
+            "roommate_id": rid, "name": names[rid],
+            "balance": round(owed_now[rid], 2),
+            "waiting_out": round(waiting_out.get(rid, 0.0), 2),
+            "waiting_in": round(waiting_in.get(rid, 0.0), 2),
+            # Left once everything waiting is counted.
+            "to_pay": round(max(owes[rid], 0.0), 2),
+            "to_receive": round(max(-owes[rid], 0.0), 2),
+        }
+        for rid in owes
+    ]
 
     transfers = []
     while True:
         debtor = max(owes, key=lambda r: owes[r])
         creditor = min(owes, key=lambda r: owes[r])
         amount = round(min(owes[debtor], -owes[creditor]), 2)
-        if amount < 0.01:
-            break
+        if amount < 0.02:
+            break  # a paisa is rounding, left over from payments of rounded amounts
         transfers.append({
             "from_roommate_id": debtor, "from_roommate": names[debtor],
             "to_roommate_id": creditor, "to_roommate": names[creditor],
@@ -326,13 +474,91 @@ def settle_up(balances: List[Dict[str, Any]]) -> Dict[str, Any]:
         })
         owes[debtor] -= amount
         owes[creditor] += amount
-    return {"transfers": transfers, "unpaid_total": gap, "unpaid_each": round(each, 2)}
+    return {"transfers": transfers, "positions": positions, "unpaid_total": gap, "unpaid_each": round(each, 2),
+            "meter_balance": round(meter_balance, 2)}
 
 
-def household_balances(data: HouseholdData, upto: Optional[str] = None) -> List[Dict[str, Any]]:
+def settle_through(data: HouseholdData) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """
+    The month settle up works up to, and what later billed months wait for.
+
+    A month can be settled up to once it has a bill and, up to it, nobody
+    active is missing a reading that a later one hasn't caught up (a skipped
+    month is billed with the next reading). Settling a half-entered month
+    would have people confirm wrong amounts.
+    """
+    months = sorted(data.get_months()["month"].dropna().astype(str).tolist())
+    billed = []
+    for m in months:
+        try:
+            _split_month(m, data)
+            billed.append(m)
+        except ValueError:
+            pass
+    if not billed:
+        return None, []
+
+    roommates, history = data.get_roommates(), data.readings_by_roommate()
+    read = {name: [m for m, (current, _) in by_month.items() if current is not None]
+            for name, by_month in history.items()}
+    missing = [(m, str(name)) for m in months for name in roommates["name"]
+               if m not in read.get(str(name), []) and _roommate_is_active(str(name), m, roommates)]
+
+    def unread(upto: str) -> List[Tuple[str, str]]:
+        return [(m, name) for m, name in missing
+                if m <= upto and not any(m < later <= upto for later in read.get(name, []))]
+
+    def has_bill(m: str) -> bool:
+        row = data.get_month(m)
+        return any(pd.notna(row[k]) and float(row[k]) > 0 for k in ("monthly_bill", "dg_bill"))
+
+    through = next((m for m in reversed(billed) if has_bill(m) and not unread(m)), None)
+    latest = billed[-1]
+    if through == latest:
+        return through, []
+    waiting: Dict[str, Dict[str, Any]] = {}
+    for m, name in unread(latest):
+        waiting.setdefault(m, {"month": m, "missing": [], "needs_bill": False})["missing"].append(name)
+    if not has_bill(latest):
+        waiting.setdefault(latest, {"month": latest, "missing": [], "needs_bill": False})["needs_bill"] = True
+    return through, [waiting[m] for m in sorted(waiting)]
+
+
+def household_settle_up(data: HouseholdData, today: str) -> Dict[str, Any]:
+    """
+    settle_up for the household as of the last complete month (settle_through):
+    its bills, the payments up to its end, every settle-up payment, and what
+    was left in the meter then (its closing balance). Payments after that month
+    are for a month not settled yet, so they wait; ones dated after ``today``
+    are listed as likely date mistakes.
+    """
+    last, waiting_for = settle_through(data)
+    meter_balance = 0.0
+    if last is not None:
+        closing = data.get_month(last)["meter_closing_balance"]
+        meter_balance = float(closing) if closing is not None and pd.notna(closing) else 0.0
+    balances = (household_balances(data, upto=last, all_settlements=True) if last is not None else [])
+    waiting = [s for s in getattr(data, "settlement_rows", []) if s.get("status") == "verifying"]
+    plan = settle_up(balances, meter_balance, waiting)
+
+    later = [r for r in data.recharge_rows if last is not None and r["date"] > _month_end_date(last)]
+    return {
+        **plan,
+        "through_month": last,
+        "waiting_for": waiting_for,
+        "later_payments_total": round(sum(float(r["amount"]) for r in later), 2),
+        "future_payments": [
+            {"id": r["id"], "date": r["date"], "roommate": r["roommate"], "amount": r["amount"], "meter": r.get("meter") or "main"}
+            for r in data.recharge_rows if r["date"] > today
+        ],
+    }
+
+
+def household_balances(data: HouseholdData, upto: Optional[str] = None,
+                       all_settlements: bool = False) -> List[Dict[str, Any]]:
     """``running_balances`` shaped for the frontend (``RunningBalance`` in models.py)."""
     shaped = []
-    for b in running_balances(data, upto):
+    for b in running_balances(data, upto, all_settlements):
         rid = data.get_roommate_id_by_name(b["roommate"])
         if rid is None:
             # Skip non-roommate entries such as "DG".
@@ -350,12 +576,13 @@ def personal_dashboard(roommate: str, data: HouseholdData) -> Dict[str, Any]:
     recharges_df = data.get_recharges()
     mine = recharges_df[recharges_df["roommate"] == roommate]
 
+    starts = reading_starts(
+        data.get_months()["month"].astype(str).tolist(), data.readings_by_roommate().get(roommate, {})
+    )
     months = []
     for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
-        prev_month = data.get_previous_month(m)
-        carried = data.get_reading(prev_month, roommate) if prev_month else None
+        previous, editable, fallback = starts[m]
         start = data.get_start_reading(m, roommate)
-        previous = carried if carried is not None else start
         current = data.get_reading(m, roommate)
         this_month = mine[mine["date"].astype(str).str.startswith(m)]
         is_dg = this_month["meter"] == "dg"
@@ -366,7 +593,8 @@ def personal_dashboard(roommate: str, data: HouseholdData) -> Dict[str, Any]:
             "month": m,
             "previous_reading": previous,
             # No reading last month: the start reading can be entered for this month.
-            "previous_editable": carried is None,
+            "previous_editable": editable,
+            "fallback_reading": fallback,
             "start_reading": start,
             "current_reading": current,
             "sub_units": None if current is None else (current if previous is None else current - previous),
@@ -416,5 +644,5 @@ TOTAL_KEYS = [
     "total_bill_cumulative", "total_recharges_cumulative", "balance",
     "main_bill_cumulative", "main_recharges_cumulative", "main_balance",
     "dg_bill_cumulative", "dg_recharges_cumulative", "dg_balance",
-    "settled_cumulative",
+    "settled_cumulative", "units_cumulative", "own_units_cumulative",
 ]

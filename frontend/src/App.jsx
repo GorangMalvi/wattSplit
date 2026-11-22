@@ -12,6 +12,8 @@ import {
   getRecharges,
   createRecharge,
   updateRecharge,
+  deleteHousehold,
+  deleteMonth,
   deleteRecharge,
   updateReading,
   downloadExport,
@@ -21,7 +23,7 @@ import {
   inviteRoommate,
   revokeInvite,
 } from './api';
-import { formatMoney, formatNumber, meterBill } from './format';
+import { formatMoney, formatMonth, formatNumber, meterBill } from './format';
 import MonthSelector from './components/MonthSelector';
 import NewMonthForm from './components/NewMonthForm';
 import MeterReportImport from './components/MeterReportImport';
@@ -29,6 +31,7 @@ import MeterBalanceFields from './components/MeterBalanceFields';
 import RoommatesTable from './components/RoommatesTable';
 import SettleUpCard from './components/SettleUpCard';
 import SummaryCard from './components/SummaryCard';
+import TotalsTable from './components/TotalsTable';
 import ReadingsTable from './components/ReadingsTable';
 import RechargesTable from './components/RechargesTable';
 import BillSplitTable from './components/BillSplitTable';
@@ -41,10 +44,9 @@ import MyDashboard, { LinkRoommateCard } from './components/MyDashboard';
 function isActiveIn(roommate, month) {
   const join = roommate.join_date || '';
   const leave = roommate.leave_date || '';
-  if (!roommate.is_active) return Boolean(leave) && month <= leave;
   if (join && month < join) return false;
   if (leave && month > leave) return false;
-  return true;
+  return roommate.is_active || Boolean(leave);
 }
 
 // Last tab the user had open, so a page refresh returns to it.
@@ -66,7 +68,59 @@ function storeView(view) {
   }
 }
 
-function App() {
+// Owner only: delete the whole household, after typing its name.
+function DeleteHouseholdCard({ household, onDeleted }) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const matches = name.trim() === household.name.trim();
+
+  const remove = async (e) => {
+    e.preventDefault();
+    if (!matches) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteHousehold(name.trim());
+      onDeleted();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card border-rose-200">
+      <h2 className="text-lg font-semibold text-rose-700">Delete household</h2>
+      <p className="mb-4 mt-1 text-sm text-slate-600">
+        Deletes <span className="font-semibold">{household.name}</span> for everyone: all its months, meter
+        readings, payments, roommates and members. This can&apos;t be undone.
+      </p>
+      {error && <ErrorAlert message={error} />}
+      <form onSubmit={remove} className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="delete-household-name" className="text-xs font-medium text-slate-500">
+            Type the household name to confirm
+          </label>
+          <input
+            id="delete-household-name"
+            placeholder={household.name}
+            autoComplete="off"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <button type="submit" disabled={!matches || busy} className="btn-danger">
+          {busy ? 'Deleting…' : 'Delete household'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// household: the active household ({ id, name, … }); onHouseholdDeleted: after
+// the owner deletes it (Root then switches to another one).
+function App({ household, onHouseholdDeleted }) {
   const [months, setMonths] = useState([]);
   const [roommates, setRoommates] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState('');
@@ -77,6 +131,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [readingError, setReadingError] = useState(null); // shown by the readings, far below the top alert
   const [showNewMonth, setShowNewMonth] = useState(false);
   const [showImport, setShowImport] = useState(false);
   // Signed-in user's role and linked roommate; 'mine' = personal dashboard.
@@ -126,6 +181,7 @@ function App() {
     if (!month) return;
     if (!quiet) setLoading(true);
     setError(null);
+    setReadingError(null);
     try {
       const [monthRes, calcRes, rechargesRes, historyRes] = await Promise.all([
         getMonth(month),
@@ -227,11 +283,13 @@ function App() {
   const handleReadingUpdate = async (roommateId, fields) => {
     if (!selectedMonth) return;
     setSaving(true);
+    setReadingError(null);
     try {
       await updateReading(selectedMonth, roommateId, fields);
-      await loadMonthData(selectedMonth);
+      // In place, so readings typed in other rows but not saved yet aren't lost.
+      await loadMonthData(selectedMonth, { quiet: true });
     } catch (err) {
-      setError(err.message);
+      setReadingError(err.message);
     } finally {
       setSaving(false);
     }
@@ -246,12 +304,8 @@ function App() {
       } else {
         await createRecharge(recharge);
       }
-      const [rechargesRes, calcRes] = await Promise.all([
-        getRecharges(selectedMonth),
-        getCalculate(selectedMonth).catch(() => null),
-      ]);
-      setRecharges(rechargesRes);
-      setCalcData(calcRes);
+      // Everything, not just this month: balances to date and Settle up change too.
+      await loadMonthData(selectedMonth, { quiet: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -264,12 +318,7 @@ function App() {
     setSaving(true);
     try {
       await deleteRecharge(id);
-      const [rechargesRes, calcRes] = await Promise.all([
-        getRecharges(selectedMonth),
-        getCalculate(selectedMonth).catch(() => null),
-      ]);
-      setRecharges(rechargesRes);
-      setCalcData(calcRes);
+      await loadMonthData(selectedMonth, { quiet: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -283,6 +332,25 @@ function App() {
       await downloadExport(selectedMonth);
     } catch (err) {
       setError(err.message);
+    }
+  };
+
+  const [confirmDeleteMonth, setConfirmDeleteMonth] = useState(false);
+  const [deletingMonth, setDeletingMonth] = useState(false);
+
+  const handleDeleteMonth = async () => {
+    if (!selectedMonth) return;
+    setDeletingMonth(true);
+    setError(null);
+    try {
+      await deleteMonth(selectedMonth);
+      setConfirmDeleteMonth(false);
+      const rest = months.map((m) => m.month).filter((m) => m !== selectedMonth).sort();
+      await loadInitial(rest[rest.length - 1]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingMonth(false);
     }
   };
 
@@ -403,16 +471,21 @@ function App() {
     const splitById = Object.fromEntries(splitRows.map((r) => [r.roommate_id, r]));
     const readingById = Object.fromEntries((monthData?.readings || []).map((r) => [r.roommate_id, r]));
     // Last month's month-end reading is this month's start; without one the
-    // start reading entered for this month is used (same rule as the backend).
+    // start reading entered for this month is used, else the last known reading
+    // (same rule as calc.reading_starts on the backend).
     const carriedById = Object.fromEntries(
       (monthData?.previous_readings || []).map((r) => [r.roommate_id, r.current_reading])
+    );
+    const fallbackById = Object.fromEntries(
+      (monthData?.fallback_readings || []).map((r) => [r.roommate_id, r.current_reading])
     );
     return roommates
       .filter((rm) => readingById[rm.id] !== undefined || isActiveIn(rm, selectedMonth))
       .map((rm) => {
         const carried = carriedById[rm.id];
         const start = readingById[rm.id]?.start_reading ?? null;
-        const previous = carried ?? start;
+        const fallback = fallbackById[rm.id] ?? null;
+        const previous = carried ?? start ?? fallback;
         const current = readingById[rm.id]?.current_reading ?? null;
         return {
           roommate_id: rm.id,
@@ -420,6 +493,7 @@ function App() {
           previous_reading: previous,
           previous_editable: carried === undefined,
           start_reading: start,
+          fallback_reading: fallback,
           current_reading: current,
           sub_units:
             splitById[rm.id]?.sub_units ??
@@ -475,6 +549,15 @@ function App() {
               )}
               {isOwner && (
                 <button
+                  onClick={() => setConfirmDeleteMonth(true)}
+                  disabled={!selectedMonth || loading || confirmDeleteMonth}
+                  className="btn-danger"
+                >
+                  Delete month
+                </button>
+              )}
+              {isOwner && (
+                <button
                   onClick={() => setShowImport(true)}
                   disabled={loading || showImport}
                   className="btn-secondary"
@@ -495,12 +578,34 @@ function App() {
 
         {error && <ErrorAlert message={error} onRetry={() => loadInitial(selectedMonth)} />}
 
+        {view === 'household' && confirmDeleteMonth && selectedMonth && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+            <span>
+              Delete <span className="font-semibold">{formatMonth(selectedMonth)}</span> and its meter readings?
+              Payments stay (they belong to their dates).
+              {months.some((m) => m.month > selectedMonth) &&
+                (months.some((m) => m.month < selectedMonth)
+                  ? ' The month after it will then start from the readings of the month before it.'
+                  : ' The month after it keeps counting from the readings it starts from now.')}
+            </span>
+            <span className="flex gap-2">
+              <button onClick={handleDeleteMonth} disabled={deletingMonth} className="btn-danger">
+                {deletingMonth ? 'Deleting…' : 'Delete month'}
+              </button>
+              <button onClick={() => setConfirmDeleteMonth(false)} className="btn-secondary">
+                Cancel
+              </button>
+            </span>
+          </div>
+        )}
+
         {/* Stays mounted while on the Household tab, so coming back is instant. */}
         {me?.roommate && (
           <div hidden={view !== 'mine'}>
             <MyDashboard
               key={me.roommate.id}
               active={view === 'mine'}
+              isOwner={isOwner}
               roommates={roommates}
               onLinkChange={handleLinkChange}
               voiceEnabled={Boolean(me.voice_enabled)}
@@ -512,7 +617,7 @@ function App() {
           !me ? (
             <LoadingSpinner />
           ) : me.roommate ? null : (
-            <LinkRoommateCard roommates={roommates} onLinked={handleLinkChange} />
+            <LinkRoommateCard roommates={roommates} isOwner={isOwner} onLinked={handleLinkChange} />
           )
         ) : (
           <>
@@ -703,6 +808,11 @@ function App() {
                 {/* Readings */}
                 <div className="card">
                   <h2 className="mb-4 text-lg font-semibold text-slate-900">Meter Readings</h2>
+                  {readingError && (
+                    <div className="mb-3">
+                      <ErrorAlert message={readingError} />
+                    </div>
+                  )}
                   {loading ? (
                     <LoadingSpinner />
                   ) : (
@@ -756,6 +866,15 @@ function App() {
                   />
                 </div>
 
+                {/* Everything so far, per roommate */}
+                <div className="card">
+                  <h2 className="mb-1 text-lg font-semibold text-slate-900">Totals to date</h2>
+                  <p className="mb-4 text-sm text-slate-500">
+                    What each roommate has recharged, the units they used and what&apos;s left, across all months.
+                  </p>
+                  <TotalsTable balances={history} months={months} />
+                </div>
+
                 {/* Balances */}
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                   <div className="card">
@@ -800,10 +919,14 @@ function App() {
 
                 <SettleUpCard
                   refreshKey={history}
-                  canRecord={(fromId, toId) => isOwner || [fromId, toId].includes(myRoommateId)}
+                  myId={myRoommateId}
+                  isOwner={isOwner}
                   onChanged={() => loadMonthData(selectedMonth, { quiet: true })}
                 />
               </>
+            )}
+            {isOwner && household && (
+              <DeleteHouseholdCard household={household} onDeleted={onHouseholdDeleted} />
             )}
           </>
         )}

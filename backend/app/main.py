@@ -18,11 +18,11 @@ from datetime import date, timedelta
 from typing import Annotated, List, Optional
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import calc, db, dev_login, export, mailer, meter_report, voice
+from . import calc, db, dev_login, export, mailer, meter_report, settlement_mail, settlements, voice
 from .auth import current_claims, current_user_id
 from .models import (
     Dashboard,
@@ -51,6 +51,7 @@ from .models import (
     RunningBalance,
     SettlementCreate,
     SettlementOut,
+    SettlementResponse,
     SettleUp,
     VoicePaymentDraft,
     DevLogin,
@@ -62,7 +63,10 @@ from .models import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.open_pool()
+    reminders = settlement_mail.start_reminders()
     yield
+    if reminders:
+        reminders.set()
     db.close_pool()
 
 
@@ -183,6 +187,18 @@ def create_household(payload: HouseholdCreate, user_id: UserId):
     return db.create_household(user_id, payload.name)
 
 
+@app.delete("/api/household", status_code=204)
+def delete_household(hid: OwnedHouseholdId, confirm_name: str = Query(..., description="The household's name, typed to confirm")):
+    """Owner: delete the household in X-Household-Id and everything in it."""
+    household = db.get_household(hid)
+    if household is None:
+        raise HTTPException(status_code=404, detail="Household not found")
+    if confirm_name.strip() != household["name"].strip():
+        raise HTTPException(status_code=422, detail="Type the household's name exactly to delete it")
+    db.delete_household(hid)
+    return None
+
+
 @app.post("/api/households/join", response_model=HouseholdOut)
 def join_household(payload: HouseholdJoin, claims: Annotated[dict, Depends(current_claims)]):
     """Join with the household's code, or with a personal invite code."""
@@ -272,6 +288,8 @@ def invite_roommate(roommate_id: int, payload: InviteCreate, request: Request, m
         raise HTTPException(status_code=404, detail="Roommate not found")
     if roommate["linked"]:
         raise HTTPException(status_code=409, detail=f"{roommate['name']} has already joined")
+    if payload.email.strip().lower() == (db.user_email(member.user_id) or "").strip().lower():
+        raise HTTPException(status_code=422, detail="That's your own email. Invite the roommate on theirs.")
     invite = db.create_invite(member.hid, roommate_id, payload.email, member.user_id)
     out = _invite_out(invite, _app_url(request))
     error = _send_invite_email({**invite, "link": out["link"]})
@@ -368,22 +386,21 @@ def me(member: CurrentMember):
 
 @app.post("/api/me/roommate", response_model=MeOut)
 def link_my_roommate(payload: LinkRoommate, member: CurrentMember):
-    """Say which roommate you are: pick an unlinked one or add yourself by name."""
+    """Say which roommate you are: add yourself by name, or (owner) pick an existing one."""
     if member.roommate_id is not None:
         raise HTTPException(status_code=409, detail=db.ALREADY_LINKED)
     try:
         if payload.roommate_id is not None:
-            _require_roommate(member.hid, payload.roommate_id)
-            roommate = db.link_roommate(member.hid, payload.roommate_id, member.user_id)
-            if roommate is None:
-                raise HTTPException(status_code=409, detail="Someone else is already linked to that roommate")
+            roommate = db.link_roommate(member.hid, payload.roommate_id, member.user_id, member.is_owner)
         else:
-            roommate = db.add_roommate(
+            roommate = db.add_self(
                 member.hid,
                 name=payload.name,
                 join_date=date.today().strftime("%Y-%m"),
                 user_id=member.user_id,
             )
+    except db.LinkError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"role": member.role, "roommate": roommate, "voice_enabled": voice.enabled()}
@@ -418,10 +435,25 @@ def list_months(hid: HouseholdId):
 
 @app.get("/api/months/{month}", response_model=MonthDetail)
 def get_month(month: MonthParam, hid: HouseholdId):
-    row = db.get_month(hid, month)
+    months = db.list_months(hid)
+    row = next((m for m in months if m["month"] == month), None)
     if row is None:
         raise HTTPException(status_code=404, detail="Month not found")
-    return {**row, "readings": db.list_readings(hid, month), "previous_readings": db.previous_readings(hid, month)}
+    readings = db.list_readings(hid)
+    by_roommate: dict = {}
+    for r in readings:
+        by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (r["current_reading"], r["start_reading"])
+    fallbacks = []
+    for rid, history in by_roommate.items():
+        last_known = calc.reading_starts([m["month"] for m in months], history)[month].fallback
+        if last_known is not None:
+            fallbacks.append({"roommate_id": rid, "current_reading": last_known})
+    return {
+        **row,
+        "readings": [r for r in readings if r["month"] == month],
+        "previous_readings": db.previous_readings(hid, month),
+        "fallback_readings": fallbacks,
+    }
 
 
 @app.post("/api/months", response_model=MonthOut, status_code=201)
@@ -453,6 +485,18 @@ def update_month(month: MonthParam, payload: MonthUpdate, hid: OwnedHouseholdId)
     if updated is None:
         raise HTTPException(status_code=404, detail="Month not found")
     return updated
+
+
+@app.delete("/api/months/{month}", status_code=204)
+def delete_month(month: MonthParam, hid: OwnedHouseholdId):
+    """Owner: delete the month and its meter readings. Payments stay (they're by date)."""
+    try:
+        deleted = db.delete_month(hid, month, calc.starts_to_keep)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Month not found")
+    return None
 
 
 MAX_REPORT_BYTES = 2 * 1024 * 1024
@@ -491,12 +535,27 @@ async def import_meter_report(request: Request, hid: OwnedHouseholdId, dry_run: 
 # ---------------------------------------------------------------------------
 # Readings
 # ---------------------------------------------------------------------------
+def _require_forward_meter(history: calc.Readings, month: str, changed: tuple) -> None:
+    error = calc.reading_error(history, history, {**history, month: changed}, month)
+    if error:
+        raise HTTPException(status_code=422, detail=error)
+
+
 @app.put("/api/readings/{month}/{roommate_id}")
 def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, member: CurrentMember):
-    if db.get_month(member.hid, month) is None:
+    history = db.roommate_readings(member.hid, roommate_id)
+    if month not in history:
         raise HTTPException(status_code=404, detail="Month not found")
     _require_editable_roommate(member, roommate_id)
-    fields = payload.model_dump(include=payload.model_fields_set)
+    fields = payload.model_dump(include=payload.model_fields_set - {"new_meter"})
+    current, start = history[month]
+    if fields.get("start_reading") == 0 and start != 0 and not payload.new_meter:
+        raise HTTPException(
+            status_code=422,
+            detail="A start reading of 0 is only for a brand-new meter. Otherwise enter what the meter showed.",
+        )
+    changed = (fields.get("current_reading", current), fields.get("start_reading", start))
+    _require_forward_meter(history, month, changed)
     db.set_reading(member.hid, month, roommate_id, **fields)
     return {"month": month, "roommate_id": roommate_id, **fields}
 
@@ -504,6 +563,9 @@ def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, 
 @app.delete("/api/readings/{month}/{roommate_id}", status_code=204)
 def delete_reading(month: MonthParam, roommate_id: int, member: CurrentMember):
     _require_editable_roommate(member, roommate_id)
+    history = db.roommate_readings(member.hid, roommate_id)
+    if month in history:
+        _require_forward_meter(history, month, (None, None))
     if not db.delete_reading(member.hid, month, roommate_id):
         raise HTTPException(status_code=404, detail="No reading for that month")
     return None
@@ -563,7 +625,7 @@ def delete_recharge(recharge_id: int, member: CurrentMember):
 # Settling up (roommates paying each other back)
 # ---------------------------------------------------------------------------
 def _require_settlement_party(member: Member, from_id: int, to_id: int) -> None:
-    """The owner may record any settlement; others only ones they pay or receive."""
+    """The owner may send any payment for verification; others only ones they pay or receive."""
     if member.is_owner:
         _require_roommate(member.hid, from_id)
         _require_roommate(member.hid, to_id)
@@ -574,37 +636,108 @@ def _require_settlement_party(member: Member, from_id: int, to_id: int) -> None:
         _require_roommate(member.hid, to_id)
 
 
+def _settlement_out(row: dict, member: Member, logins) -> dict:
+    return {
+        **row,
+        "receiver_joined": row["status"] != settlements.VERIFYING or row["receiver_user_id"] is not None,
+        "actions": settlements.allowed_actions(row, member.user_id, member.roommate_id, logins),
+    }
+
+
 @app.get("/api/settle-up", response_model=SettleUp)
-def settle_up(hid: HouseholdId):
-    """Who pays whom to bring every balance to zero, and what's been recorded."""
-    data = db.HouseholdData(hid)
-    return {**calc.settle_up(calc.household_balances(data)), "settlements": data.settlement_rows}
+def settle_up(member: CurrentMember):
+    """Who pays whom to bring every balance to zero, what's in verification, and what's been recorded."""
+    data = db.HouseholdData(member.hid)
+    return {
+        **calc.household_settle_up(data, today=date.today().isoformat()),
+        "settlements": [_settlement_out(s, member, data.logins) for s in data.settlement_rows],
+    }
 
 
 @app.post("/api/settlements", response_model=SettlementOut, status_code=201)
-def create_settlement(payload: SettlementCreate, member: CurrentMember):
-    if payload.from_roommate_id == payload.to_roommate_id:
+def create_settlement(payload: SettlementCreate, member: CurrentMember, tasks: BackgroundTasks):
+    """
+    "I paid": the payment waits in verification until the receiver marks it
+    received. One the receiver records themselves is received straight away.
+    """
+    from_id, to_id = payload.from_roommate_id, payload.to_roommate_id
+    if from_id == to_id:
         raise HTTPException(status_code=422, detail="Choose two different roommates")
-    _require_settlement_party(member, payload.from_roommate_id, payload.to_roommate_id)
-    return db.add_settlement(
-        member.hid,
-        date=(payload.settlement_date or date.today()).isoformat(),
-        from_roommate_id=payload.from_roommate_id,
-        to_roommate_id=payload.to_roommate_id,
-        amount=payload.amount,
-        notes=payload.notes or "",
-        created_by=member.user_id,
-    )
+    _require_settlement_party(member, from_id, to_id)
+    # The phone's date can be a day ahead of the server's (UTC).
+    paid_on = payload.settlement_date or date.today()
+    if paid_on > date.today() + timedelta(days=1):
+        raise HTTPException(status_code=422, detail="The payment date can't be in the future")
+    amount = round(payload.amount, 2)
+    logins: set = set()
+
+    def decide(data, sent_today: int) -> str:
+        logins.update(data.logins)
+        return settlements.new_status(
+            calc.household_settle_up(data, today=date.today().isoformat()),
+            data.settlement_rows,
+            data.logins,
+            {r["id"]: r["name"] for r in data.roommate_rows},
+            user_id=member.user_id,
+            roommate_id=member.roommate_id,
+            from_id=from_id,
+            to_id=to_id,
+            amount=amount,
+            sent_today=sent_today,
+        )
+
+    try:
+        row = db.add_settlement(
+            member.hid,
+            date=paid_on.isoformat(),
+            from_roommate_id=from_id,
+            to_roommate_id=to_id,
+            amount=amount,
+            notes=payload.notes or "",
+            created_by=member.user_id,
+            decide=decide,
+        )
+    except settlements.NotAllowed as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+    tasks.add_task(settlement_mail.notify, row["status"], member.hid, row, member.user_id)
+    return _settlement_out(row, member, logins)
 
 
-@app.delete("/api/settlements/{settlement_id}", status_code=204)
-def delete_settlement(settlement_id: int, member: CurrentMember):
-    existing = db.get_settlement(member.hid, settlement_id)
-    if existing is None:
+@app.post("/api/settlements/{settlement_id}/{action}", response_model=SettlementOut)
+def respond_to_settlement(
+    settlement_id: int,
+    action: settlements.Action,
+    member: CurrentMember,
+    tasks: BackgroundTasks,
+    payload: Optional[SettlementResponse] = None,
+):
+    """Mark received / not received, cancel, or undo (which takes both roommates)."""
+    reason = " ".join(((payload.reason if payload else None) or "").split())
+    if action == "not_received" and not reason:
+        raise HTTPException(status_code=422, detail="Say why, so the payer knows what to check")
+    logins: set = set()
+
+    def check(row: dict, known_logins: set) -> None:
+        logins.update(known_logins)
+        if action not in settlements.allowed_actions(row, member.user_id, member.roommate_id, known_logins):
+            if action == "received" and row["status"] == settlements.VERIFYING:
+                raise settlements.NotAllowed(
+                    403, f"Only {row['to_roommate']}, on their own login, can mark this received"
+                )
+            raise settlements.NotAllowed(409, "You can't do that with this payment. Refresh to see where it stands.")
+
+    try:
+        changed = db.respond_settlement(member.hid, settlement_id, member.user_id, action, reason, check)
+    except settlements.NotAllowed as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+    if changed is None:
         raise HTTPException(status_code=404, detail="Payment not found")
-    _require_settlement_party(member, existing["from_roommate_id"], existing["to_roommate_id"])
-    db.delete_settlement(member.hid, settlement_id)
-    return None
+    before, after = changed
+    if action != "withdraw_undo":
+        # Who asked for an undo is cleared once it's answered, so take it from before.
+        row = {**after, "undo_side": after["undo_side"] or before["undo_side"]}
+        tasks.add_task(settlement_mail.notify, action, member.hid, row, member.user_id)
+    return _settlement_out(after, member, logins)
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,9 @@ services:
         value: wattsplit@jugadu.tech   # must be on a domain verified in Mailtrap
       - key: MAIL_FROM_NAME
         value: wattSplit
+      # Remind receivers about payments waiting to be confirmed (live server only).
+      - key: SETTLEMENT_REMINDERS
+        value: "1"
       # Voice payments (60db speech-to-text). Leave empty to hide the mic button.
       - key: SIXTYDB_API_KEY
         sync: false

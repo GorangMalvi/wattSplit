@@ -12,7 +12,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import pandas as pd
@@ -92,6 +92,16 @@ def _execute(query: str, params: tuple = ()) -> int:
         return conn.execute(query, params).rowcount
 
 
+def lock_household(conn, hid: UUID) -> None:
+    """One change at a time to a household's logins and settlements (released at commit)."""
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (str(hid),))
+
+
+def user_email(user_id: str) -> Optional[str]:
+    row = _fetch_one("SELECT email FROM auth.users WHERE id = %s", (user_id,))
+    return row["email"] if row else None
+
+
 def _set_clause(updates: Dict[str, Any]) -> str:
     # Keys are always filtered through an allow-list before reaching here.
     return ", ".join(f"{k} = %s" for k in updates)
@@ -158,6 +168,15 @@ def join_household(user_id: str, invite_code: str) -> Optional[Dict[str, Any]]:
     return {**household, "role": role}
 
 
+def get_household(hid: UUID) -> Optional[Dict[str, Any]]:
+    return _fetch_one("SELECT id, name, invite_code FROM households WHERE id = %s", (hid,))
+
+
+def delete_household(hid: UUID) -> bool:
+    """Delete the household and everything in it (the tables cascade)."""
+    return _execute("DELETE FROM households WHERE id = %s", (hid,)) > 0
+
+
 def get_membership(user_id: str, household_id: UUID) -> Optional[Dict[str, Any]]:
     """
     ``{"role": "owner" | "member", "roommate_id": int | None}`` (the roommate
@@ -215,19 +234,110 @@ def add_roommate(hid: UUID, name: str, join_date: str = "", leave_date: str = ""
         raise _roommate_conflict(exc, name)
 
 
-def link_roommate(hid: UUID, rid: int, user_id: str) -> Optional[Dict[str, Any]]:
-    """Link the login to an unlinked roommate; None if it's missing or already taken."""
+class LinkError(ValueError):
+    """A login that can't become that roommate; ``status`` is the HTTP status to answer with."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def link_roommate(hid: UUID, rid: int, user_id: str, is_owner: bool) -> Dict[str, Any]:
+    """
+    Pick yourself from the existing roommates. Only the owner can: anyone else
+    needs the owner's invite (accept_invite). The owner can't take a name
+    someone else has signed in as, or change names once payments are recorded.
+    """
     try:
-        return _fetch_one(
-            f"""
-            UPDATE roommates SET user_id = %s
-            WHERE household_id = %s AND id = %s AND user_id IS NULL
-            RETURNING {_ROOMMATE_FIELDS}
-            """,
-            (user_id, hid, rid),
-        )
+        with _pool.connection() as conn, conn.transaction():
+            lock_household(conn, hid)
+            target = conn.execute(
+                "SELECT name, user_id FROM roommates WHERE household_id = %s AND id = %s", (hid, rid)
+            ).fetchone()
+            if target is None:
+                raise LinkError(404, "Roommate not found")
+            name = target["name"]
+            if target["user_id"] is not None:
+                raise LinkError(409, "Someone else is already linked to that roommate")
+            if not is_owner:
+                raise LinkError(403, f"Ask the household owner to invite you as {name}.")
+            logins = conn.execute(
+                "SELECT roommate_id, user_id FROM roommate_logins WHERE household_id = %s", (hid,)
+            ).fetchall()
+            mine = {r["roommate_id"] for r in logins if str(r["user_id"]) == str(user_id)}
+            if any(r["roommate_id"] == rid and str(r["user_id"]) != str(user_id) for r in logins):
+                raise LinkError(409, f"{name} has had their own login. Invite them to link it again.")
+            if rid in mine:
+                _lock_waiting_payments(conn, hid, rid, user_id)  # was this roommate already
+            else:
+                if mine:
+                    _forget_old_name(conn, hid, name, user_id)
+                _check_new_name(conn, hid, rid, name)
+            return conn.execute(
+                f"""
+                UPDATE roommates SET user_id = %s
+                WHERE household_id = %s AND id = %s
+                RETURNING {_ROOMMATE_FIELDS}
+                """,
+                (user_id, hid, rid),
+            ).fetchone()
     except errors.UniqueViolation:
         raise ValueError(ALREADY_LINKED)
+
+
+def add_self(hid: UUID, name: str, join_date: str, user_id: str) -> Dict[str, Any]:
+    """Add yourself as a new roommate. Someone who was already one is switching names."""
+    try:
+        with _pool.connection() as conn, conn.transaction():
+            lock_household(conn, hid)
+            if conn.execute(
+                "SELECT 1 FROM roommate_logins WHERE household_id = %s AND user_id = %s LIMIT 1", (hid, user_id)
+            ).fetchone():
+                _forget_old_name(conn, hid, name.strip(), user_id)
+            return conn.execute(
+                f"""
+                INSERT INTO roommates (household_id, name, join_date, user_id) VALUES (%s, %s, %s, %s)
+                RETURNING {_ROOMMATE_FIELDS}
+                """,
+                (hid, name.strip(), join_date, user_id),
+            ).fetchone()
+    except errors.UniqueViolation as exc:
+        raise _roommate_conflict(exc, name)
+
+
+def _forget_old_name(conn, hid: UUID, name: str, user_id: str) -> None:
+    """
+    Switching names is only for fixing a wrong pick, before any payments. The
+    old pick is forgotten, or it would be a way back in: be C for a moment,
+    and return as C once there's a payment for C to confirm.
+    """
+    if conn.execute("SELECT 1 FROM settlements WHERE household_id = %s LIMIT 1", (hid,)).fetchone():
+        raise LinkError(409, f"You can't switch to {name} after payments between roommates have been recorded.")
+    conn.execute("DELETE FROM roommate_logins WHERE household_id = %s AND user_id = %s", (hid, user_id))
+
+
+def _check_new_name(conn, hid: UUID, rid: int, name: str) -> None:
+    """The owner picking a roommate they haven't been: not one with a payment waiting for them."""
+    if conn.execute(
+        "SELECT 1 FROM settlements WHERE household_id = %s AND to_roommate_id = %s AND status = 'verifying' LIMIT 1",
+        (hid, rid),
+    ).fetchone():
+        raise LinkError(
+            409,
+            f"A payment is waiting for {name} to confirm, so it can't be picked here. "
+            "If that's you, ask the payer to cancel it and send it again once you're linked.",
+        )
+
+
+def _lock_waiting_payments(conn, hid: UUID, rid: int, user_id: str) -> None:
+    """Payments sent before the receiver had a login: from now on only this login can confirm them."""
+    conn.execute(
+        """
+        UPDATE settlements SET receiver_user_id = %s, reminders = 0, reminded_at = now()
+        WHERE household_id = %s AND to_roommate_id = %s AND status = 'verifying' AND receiver_user_id IS NULL
+        """,
+        (user_id, hid, rid),
+    )
 
 
 def unlink_user(hid: UUID, user_id: str) -> bool:
@@ -246,20 +356,57 @@ def unlink_roommate(hid: UUID, rid: int) -> bool:
     ) > 0
 
 
+def saved_leave_month(before: Dict[str, Any], is_active: bool, leave: str, read_months: List[str]) -> str:
+    """
+    The Left month to save, so that changing Active doesn't rewrite past bills.
+
+    Turning someone inactive without a Left month (or clearing it while they're
+    inactive) sets it to the last month they were billed for. Turning them
+    active again clears it, unless readings after it would then get billed.
+    ``read_months``: the months they have a month-end reading for.
+    """
+    was_active, old_leave = bool(before["is_active"]), before["leave_date"] or ""
+    if not is_active and not leave and (was_active or old_leave):
+        join = before["join_date"] or ""
+        billed = [m for m in read_months if m >= join and (not old_leave or m <= old_leave)]
+        return max(billed, default="")
+    if is_active and not was_active and leave and leave == old_leave:
+        if not any(m > leave for m in read_months):
+            return ""
+    return leave
+
+
 def update_roommate(hid: UUID, rid: int, **kwargs) -> Optional[Dict[str, Any]]:
     allowed = {"name", "join_date", "leave_date", "is_active"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return get_roommate(hid, rid)
     try:
-        return _fetch_one(
-            f"""
-            UPDATE roommates SET {_set_clause(updates)}
-            WHERE household_id = %s AND id = %s
-            RETURNING {_ROOMMATE_FIELDS}
-            """,
-            (*updates.values(), hid, rid),
-        )
+        with _pool.connection() as conn, conn.transaction():
+            before = conn.execute(
+                f"{_ROOMMATE_SELECT} WHERE household_id = %s AND id = %s FOR NO KEY UPDATE", (hid, rid)
+            ).fetchone()
+            if before is None:
+                return None
+            read = conn.execute(
+                """
+                SELECT month FROM readings
+                WHERE household_id = %s AND roommate_id = %s AND current_reading IS NOT NULL
+                """,
+                (hid, rid),
+            ).fetchall()
+            after = {**before, **updates}
+            updates["leave_date"] = saved_leave_month(
+                before, after["is_active"], after["leave_date"] or "", [r["month"] for r in read]
+            )
+            return conn.execute(
+                f"""
+                UPDATE roommates SET {_set_clause(updates)}
+                WHERE household_id = %s AND id = %s
+                RETURNING {_ROOMMATE_FIELDS}
+                """,
+                (*updates.values(), hid, rid),
+            ).fetchone()
     except errors.UniqueViolation as exc:
         raise _roommate_conflict(exc, updates.get("name"))
 
@@ -361,6 +508,39 @@ def update_month(hid: UUID, month: str, **kwargs) -> Optional[Dict[str, Any]]:
         ).fetchone()
 
 
+def delete_month(hid: UUID, month: str,
+                 keep_starts: Callable[[List[str], Dict[str, tuple], str], Dict[str, float]]) -> bool:
+    """
+    Delete the month and its meter readings (they cascade). Payments are kept:
+    they belong to dates, not to months. ``keep_starts`` (calc.starts_to_keep)
+    gives the start readings later months need first, or raises ValueError.
+    """
+    with _pool.connection() as conn, conn.transaction():
+        lock_household(conn, hid)
+        # Locks every month, so no reading can be saved while this works out the starts.
+        months = [r["month"] for r in conn.execute(
+            "SELECT month FROM months WHERE household_id = %s ORDER BY month FOR UPDATE", (hid,)
+        ).fetchall()]
+        if month not in months:
+            return False
+        by_roommate: Dict[int, Dict[str, tuple]] = {}
+        for r in conn.execute(
+            "SELECT month, roommate_id, current_reading, start_reading FROM readings WHERE household_id = %s", (hid,)
+        ).fetchall():
+            by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (r["current_reading"], r["start_reading"])
+        for rid, readings in by_roommate.items():
+            for later, start in keep_starts(months, readings, month).items():
+                conn.execute(
+                    """
+                    INSERT INTO readings (household_id, month, roommate_id, start_reading) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (household_id, month, roommate_id) DO UPDATE SET start_reading = excluded.start_reading
+                    """,
+                    (hid, later, rid, start),
+                )
+        conn.execute("DELETE FROM months WHERE household_id = %s AND month = %s", (hid, month))
+        return True
+
+
 def import_meter_months(hid: UUID, months: List[Dict[str, Any]]) -> None:
     """
     Create or update months from the meter report: main meter readings, the
@@ -409,7 +589,7 @@ def _mask_email(email: str) -> str:
 
 
 _INVITE_SELECT = """
-    SELECT i.id, i.household_id, i.roommate_id, rm.name AS roommate, i.email, i.code,
+    SELECT i.id, i.household_id, i.roommate_id, rm.name AS roommate, i.email, i.code, i.created_by,
            i.expires_at, i.accepted_at, (i.expires_at <= now()) AS expired,
            h.name AS household, (rm.user_id IS NOT NULL) AS linked
     FROM invites i
@@ -484,6 +664,9 @@ def accept_invite(code: str, user_id: str, email: Optional[str]) -> Dict[str, An
                 403, f"This invite is for {_mask_email(invite['email'])}. Sign in with that email to accept it."
             )
         hid = invite["household_id"]
+        if str(invite["created_by"]) == str(user_id):
+            raise InviteError(403, f"You can't accept your own invite to be {invite['roommate']}.")
+        lock_household(conn, hid)
         conn.execute(
             "INSERT INTO household_members (household_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             (hid, user_id),
@@ -500,6 +683,7 @@ def accept_invite(code: str, user_id: str, email: Optional[str]) -> Dict[str, An
             ).rowcount
             if not linked:
                 raise InviteError(409, f"Someone else is already {invite['roommate']} in {invite['household']}.")
+            _lock_waiting_payments(conn, hid, invite["roommate_id"], user_id)
         conn.execute("UPDATE invites SET accepted_by = %s, accepted_at = now() WHERE id = %s",
                      (user_id, invite["id"]))
         return conn.execute(
@@ -541,6 +725,21 @@ def previous_readings(hid: UUID, month: str) -> List[Dict[str, Any]]:
         """,
         (hid, hid, month),
     )
+
+
+def roommate_readings(hid: UUID, roommate_id: int) -> Dict[str, tuple]:
+    """Every month of the household -> the roommate's (month-end, start) reading, None where missing."""
+    rows = _fetch(
+        """
+        SELECT m.month, r.current_reading, r.start_reading
+        FROM months m
+        LEFT JOIN readings r
+          ON r.household_id = m.household_id AND r.month = m.month AND r.roommate_id = %s
+        WHERE m.household_id = %s
+        """,
+        (roommate_id, hid),
+    )
+    return {r["month"]: (r["current_reading"], r["start_reading"]) for r in rows}
 
 
 def set_reading(hid: UUID, month: str, roommate_id: int, **fields: Optional[float]) -> None:
@@ -630,48 +829,198 @@ def delete_recharge(hid: UUID, rid: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Settlements (one roommate paying another back)
+# Settlements (one roommate paying another back): rules in settlements.py
 # ---------------------------------------------------------------------------
-SETTLEMENT_COLS = ["id", "date", "from_roommate_id", "from_roommate", "to_roommate_id", "to_roommate",
-                   "amount", "notes"]
 _SETTLEMENT_SELECT = """
     SELECT s.id, to_char(s.date, 'YYYY-MM-DD') AS date,
            s.from_roommate_id, f.name AS from_roommate, s.to_roommate_id, t.name AS to_roommate,
-           s.amount, s.notes
+           s.amount, s.notes, s.status,
+           s.created_by::text AS created_by,
+           s.payer_user_id::text AS payer_user_id,
+           s.receiver_user_id::text AS receiver_user_id,
+           s.responded_by_email, s.reject_reason,
+           s.undo_side, s.undo_requested_by::text AS undo_requested_by,
+           coalesce(s.undo_requested_at > now() - interval '1 day', false) AS undo_recent,
+           (s.emailed_at IS NOT NULL) AS emailed
     FROM settlements s
     JOIN roommates f ON f.id = s.from_roommate_id
     JOIN roommates t ON t.id = s.to_roommate_id
 """
 
 
-def list_settlements(hid: UUID) -> List[Dict[str, Any]]:
-    return _fetch(_SETTLEMENT_SELECT + " WHERE s.household_id = %s ORDER BY s.date, s.id", (hid,))
+def _settlement(conn, hid: UUID, sid: int) -> Optional[Dict[str, Any]]:
+    return conn.execute(_SETTLEMENT_SELECT + " WHERE s.household_id = %s AND s.id = %s", (hid, sid)).fetchone()
 
 
-def get_settlement(hid: UUID, sid: int) -> Optional[Dict[str, Any]]:
-    return _fetch_one(_SETTLEMENT_SELECT + " WHERE s.household_id = %s AND s.id = %s", (hid, sid))
+def _masked_login(conn, user_id: str) -> Optional[str]:
+    row = conn.execute("SELECT email FROM auth.users WHERE id = %s", (user_id,)).fetchone()
+    return _mask_email(row["email"]) if row and row["email"] else None
 
 
 def add_settlement(hid: UUID, date: str, from_roommate_id: int, to_roommate_id: int, amount: float,
-                   notes: str, created_by: str) -> Dict[str, Any]:
-    row = _fetch_one(
-        """
-        INSERT INTO settlements (household_id, date, from_roommate_id, to_roommate_id, amount, notes, created_by)
-        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """,
-        (hid, date, from_roommate_id, to_roommate_id, round(float(amount), 2), notes or "", created_by),
-    )
-    return get_settlement(hid, row["id"])
+                   notes: str, created_by: str,
+                   decide: Callable[["HouseholdData", int], str]) -> Dict[str, Any]:
+    """
+    Record a payment. ``decide(data, sent_today)`` gives its status, or raises.
+    It runs under the household's lock, so two payments sent at once can't
+    both use the same amount owed.
+    """
+    with _pool.connection() as conn, conn.transaction():
+        lock_household(conn, hid)
+        data = HouseholdData(hid, conn)
+        sent_today = conn.execute(
+            """
+            SELECT count(*) AS n FROM settlements
+            WHERE household_id = %s AND created_by = %s AND created_at > now() - interval '1 day'
+            """,
+            (hid, created_by),
+        ).fetchone()["n"]
+        status = decide(data, sent_today)
+        received = status == "received"
+        sid = conn.execute(
+            """
+            INSERT INTO settlements (household_id, date, from_roommate_id, to_roommate_id, amount, notes,
+                                     created_by, status, payer_user_id, receiver_user_id,
+                                     responded_at, responded_by, responded_by_email)
+            VALUES (%(h)s, %(date)s, %(payer)s, %(receiver)s, %(amount)s, %(notes)s, %(user)s, %(status)s,
+                    (SELECT user_id FROM roommates WHERE household_id = %(h)s AND id = %(payer)s),
+                    (SELECT user_id FROM roommates WHERE household_id = %(h)s AND id = %(receiver)s),
+                    CASE WHEN %(received)s THEN now() END, %(responder)s, %(email)s)
+            RETURNING id
+            """,
+            {
+                "h": hid, "date": date, "payer": from_roommate_id, "receiver": to_roommate_id,
+                "amount": round(float(amount), 2), "notes": notes or "", "user": created_by, "status": status,
+                "received": received, "responder": created_by if received else None,
+                "email": _masked_login(conn, created_by) if received else None,
+            },
+        ).fetchone()["id"]
+        return _settlement(conn, hid, sid)
 
 
-def delete_settlement(hid: UUID, sid: int) -> bool:
-    return _execute("DELETE FROM settlements WHERE household_id = %s AND id = %s", (hid, sid)) > 0
+_FINAL_STATUS = {
+    "received": "received", "not_received": "not_received", "cancel": "cancelled", "agree_undo": "undone",
+}
+
+
+def respond_settlement(hid: UUID, sid: int, user_id: str, action: str, reason: Optional[str],
+                       check: Callable[[Dict[str, Any], set], None]
+                       ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """
+    Apply an action once ``check(row, logins)`` passes (it raises otherwise).
+    Returns the row before and after, or None if there's no such payment.
+    """
+    with _pool.connection() as conn, conn.transaction():
+        lock_household(conn, hid)
+        before = _settlement(conn, hid, sid)
+        if before is None:
+            return None
+        logins = conn.execute(
+            "SELECT roommate_id, user_id::text AS user_id FROM roommate_logins WHERE household_id = %s", (hid,)
+        ).fetchall()
+        check(before, {(r["roommate_id"], r["user_id"]) for r in logins})
+
+        changes: Dict[str, Any] = {}
+        if action in _FINAL_STATUS:
+            changes.update(status=_FINAL_STATUS[action], responded_by=user_id,
+                           responded_by_email=_masked_login(conn, user_id))
+        if action == "not_received":
+            changes["reject_reason"] = reason
+        elif action == "request_undo":
+            side = "payer" if _is_linked(conn, hid, before["from_roommate_id"], user_id) else "receiver"
+            changes.update(undo_side=side, undo_requested_by=user_id)
+        elif action in ("agree_undo", "decline_undo", "withdraw_undo"):
+            changes.update(undo_side=None, undo_requested_by=None)
+
+        stamp = ", responded_at = now()" if action in _FINAL_STATUS else ""
+        if action == "request_undo":
+            stamp = ", undo_requested_at = now()"
+        conn.execute(
+            f"UPDATE settlements SET {_set_clause(changes)}{stamp} WHERE household_id = %s AND id = %s",
+            (*changes.values(), hid, sid),
+        )
+        return before, _settlement(conn, hid, sid)
+
+
+def _is_linked(conn, hid: UUID, rid: int, user_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM roommates WHERE household_id = %s AND id = %s AND user_id = %s", (hid, rid, user_id)
+    ).fetchone() is not None
+
+
+def settlement_people(hid: UUID, row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Who to email about a payment, each ``{user_id, email}`` or None: the logins
+    it's locked to (else the payer's current one), and for a receiver without a
+    login the owner's invite ``{user_id: None, email, code}``.
+    """
+    with _pool.connection() as conn:
+        def login(user_id: Optional[str]) -> Optional[Dict[str, Any]]:
+            if not user_id:
+                return None
+            found = conn.execute("SELECT email FROM auth.users WHERE id = %s", (user_id,)).fetchone()
+            return {"user_id": str(user_id), "email": found["email"]} if found and found["email"] else None
+
+        def linked(rid: int) -> Optional[str]:
+            found = conn.execute(
+                "SELECT user_id FROM roommates WHERE household_id = %s AND id = %s", (hid, rid)
+            ).fetchone()
+            return found["user_id"] if found else None
+
+        household = conn.execute("SELECT name FROM households WHERE id = %s", (hid,)).fetchone()
+        receiver_id, invite = row["receiver_user_id"], None
+        if not receiver_id and row["status"] in ("received", "undone"):
+            receiver_id = linked(row["to_roommate_id"])  # recorded before payments were locked to logins
+        if not receiver_id:
+            found = conn.execute(
+                """
+                SELECT email, code FROM invites
+                WHERE household_id = %s AND roommate_id = %s AND accepted_at IS NULL AND expires_at > now()
+                """,
+                (hid, row["to_roommate_id"]),
+            ).fetchone()
+            invite = {"user_id": None, **found} if found else None
+        return {
+            "household": household["name"] if household else "",
+            "payer": login(row["payer_user_id"] or linked(row["from_roommate_id"])),
+            "receiver": login(receiver_id),
+            "creator": login(row["created_by"]),
+            "invite": invite,
+        }
+
+
+def mark_settlement_emailed(sid: int) -> None:
+    _execute("UPDATE settlements SET emailed_at = now() WHERE id = %s", (sid,))
+
+
+REMIND_EVERY_DAYS = 3
+MAX_REMINDERS = 5
+
+
+def claim_due_reminders() -> List[Tuple[UUID, Dict[str, Any]]]:
+    """Payments due a reminder, marked as reminded so two servers don't both send one."""
+    with _pool.connection() as conn, conn.transaction():
+        due = conn.execute(
+            """
+            UPDATE settlements SET reminded_at = now(), reminders = reminders + 1
+            WHERE id IN (
+                SELECT id FROM settlements
+                WHERE status = 'verifying' AND reminders < %s
+                  AND coalesce(reminded_at, created_at) < now() - make_interval(days => %s)
+                ORDER BY id LIMIT 50
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id, household_id
+            """,
+            (MAX_REMINDERS, REMIND_EVERY_DAYS),
+        ).fetchall()
+        return [(r["household_id"], _settlement(conn, r["household_id"], r["id"])) for r in due]
 
 
 # ---------------------------------------------------------------------------
 # In-memory snapshot for calc / export
 # ---------------------------------------------------------------------------
-# All four tables of one household in a single round trip, each as a JSON
+# All the tables of one household in a single round trip, each as a JSON
 # array in the same order the list_* helpers use.
 _SNAPSHOT_SQL = f"""
 SELECT
@@ -684,15 +1033,20 @@ SELECT
     (SELECT coalesce(json_agg(t ORDER BY t.date, t.id), '[]')
      FROM ({_RECHARGE_SELECT} WHERE r.household_id = %(h)s) t) AS recharges,
     (SELECT coalesce(json_agg(t ORDER BY t.date, t.id), '[]')
-     FROM ({_SETTLEMENT_SELECT} WHERE s.household_id = %(h)s) t) AS settlements
+     FROM ({_SETTLEMENT_SELECT} WHERE s.household_id = %(h)s) t) AS settlements,
+    (SELECT coalesce(json_agg(t), '[]')
+     FROM (SELECT roommate_id, user_id::text AS user_id
+           FROM roommate_logins WHERE household_id = %(h)s) t) AS logins
 """
 
 
 class HouseholdData:
     """One household's tables loaded once, with the lookups calc/export need."""
 
-    def __init__(self, hid: UUID):
-        rows = _fetch_one(_SNAPSHOT_SQL, {"h": hid})
+    def __init__(self, hid: UUID, conn=None):
+        # conn: read inside that connection's transaction.
+        params = {"h": hid}
+        rows = conn.execute(_SNAPSHOT_SQL, params).fetchone() if conn else _fetch_one(_SNAPSHOT_SQL, params)
         # Plain dicts too, for API responses (DataFrames hold numpy types).
         self.roommate_rows: List[Dict[str, Any]] = rows["roommates"]
         self.recharge_rows: List[Dict[str, Any]] = rows["recharges"]
@@ -701,6 +1055,7 @@ class HouseholdData:
         self.readings = pd.DataFrame(rows["readings"], columns=READING_COLS)
         self.recharges = pd.DataFrame(rows["recharges"], columns=RECHARGE_COLS)
         self.settlement_rows: List[Dict[str, Any]] = rows["settlements"]
+        self.logins = {(r["roommate_id"], r["user_id"]) for r in rows["logins"]}
 
     def get_roommates(self) -> pd.DataFrame:
         return self.roommates
@@ -717,6 +1072,17 @@ class HouseholdData:
 
     def get_readings(self, month: str) -> pd.DataFrame:
         return self.readings[self.readings["month"] == month]
+
+    def readings_by_roommate(self) -> Dict[str, Dict[str, tuple]]:
+        """Roommate name -> month -> (month-end, start) reading, None where missing."""
+        found: Dict[str, Dict[str, tuple]] = {}
+        df = self.readings
+        for month, name, current, start in zip(df["month"], df["roommate"], df["current_reading"], df["start_reading"]):
+            found.setdefault(str(name), {})[str(month)] = (
+                float(current) if pd.notna(current) else None,
+                float(start) if pd.notna(start) else None,
+            )
+        return found
 
     def get_reading(self, month: str, roommate: str) -> Optional[float]:
         rows = self.readings[(self.readings["month"] == month) & (self.readings["roommate"] == roommate)]

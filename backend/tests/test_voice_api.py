@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,7 +31,9 @@ def stub_stt(monkeypatch, text=None, error=None):
     return calls
 
 
-def post(client, body=b"audio", today="2026-10-07", content_type="audio/webm;codecs=opus"):
+def post(client, body=b"audio", today=None, content_type="audio/webm;codecs=opus"):
+    # The endpoint ignores a phone date more than a day from the server's, so it can't be a fixed one.
+    today = today or date.today().isoformat()
     return client.post("/api/voice/payment", content=body, params={"today": today},
                        headers={"Content-Type": content_type})
 
@@ -41,7 +43,7 @@ def test_returns_a_draft(client, monkeypatch):
     r = post(client)
     assert r.status_code == 200
     assert r.json() == {
-        "transcript": "kal DG mein dedh hazaar dale", "amount": 1500.0, "date": "2026-10-06",
+        "transcript": "kal DG mein dedh hazaar dale", "amount": 1500.0, "date": (date.today() - timedelta(days=1)).isoformat(),
         "date_said": True, "meter": "dg", "meter_said": True,
     }
     assert calls == [(b"audio", "audio/webm;codecs=opus")]
