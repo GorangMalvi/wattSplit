@@ -10,7 +10,8 @@ Split a shared flat's electricity bill fairly from sub-meter readings, common un
 ## How it works
 - Users sign in with a one-time code emailed by Supabase Auth (no passwords; the account is created on first sign-in). Each user creates a **household** (a flat) or joins one with its 8-character invite code; all roommates, months, readings and recharges belong to a household.
 - The frontend sends the Supabase access token and the chosen household (`X-Household-Id`) with every API call. FastAPI verifies the token and checks membership before touching any data.
-- Tables have Row Level Security enabled, so the public anon key cannot read another household's data through Supabase's REST API.
+- Tables have Row Level Security enabled, so the public anon key cannot read another household's data through Supabase's REST API. Bill data is read-only there: every write goes through the backend and its checks.
+- **Deploying a schema change**: apply it to the database before merging to `main`, which Render deploys automatically.
 
 ## Supabase setup (once)
 1. Copy `.env.example` to `.env` and fill in, from your Supabase project:

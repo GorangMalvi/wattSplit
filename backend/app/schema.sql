@@ -199,10 +199,9 @@ on conflict do nothing;
 -- itself. RLS is still required because Supabase exposes the public schema
 -- over its REST API to anyone holding the anon key.
 --
--- Members read everything in their household. The owner changes anything;
--- other members change only readings and payments of their own roommate.
--- Who is which roommate, and settle-up payments, only the backend writes:
--- otherwise "received" could be faked through the REST API.
+-- Over the REST API members can only read their household. Every write goes
+-- through the backend, which checks who may change what and that readings add
+-- up; writes over REST would skip those checks.
 -- ---------------------------------------------------------------------------
 create or replace function public.is_household_member(hid uuid)
 returns boolean
@@ -285,31 +284,22 @@ drop policy if exists "members read months" on public.months;
 create policy "members read months" on public.months
     for select to authenticated using (public.is_household_member(household_id));
 
+-- Earlier versions let the owner write months over REST (deleting one deletes its readings).
 drop policy if exists "owner manages months" on public.months;
-create policy "owner manages months" on public.months
-    for all to authenticated
-    using (public.is_household_owner(household_id))
-    with check (public.is_household_owner(household_id));
 
 drop policy if exists "members read readings" on public.readings;
 create policy "members read readings" on public.readings
     for select to authenticated using (public.is_household_member(household_id));
 
+-- Earlier versions let the owner and each roommate write readings over REST.
 drop policy if exists "owner or self manages readings" on public.readings;
-create policy "owner or self manages readings" on public.readings
-    for all to authenticated
-    using (public.is_household_owner(household_id) or public.is_own_roommate(household_id, roommate_id))
-    with check (public.is_household_owner(household_id) or public.is_own_roommate(household_id, roommate_id));
 
 drop policy if exists "members read recharges" on public.recharges;
 create policy "members read recharges" on public.recharges
     for select to authenticated using (public.is_household_member(household_id));
 
+-- Earlier versions let the owner and each roommate write recharges over REST.
 drop policy if exists "owner or self manages recharges" on public.recharges;
-create policy "owner or self manages recharges" on public.recharges
-    for all to authenticated
-    using (public.is_household_owner(household_id) or public.is_own_roommate(household_id, roommate_id))
-    with check (public.is_household_owner(household_id) or public.is_own_roommate(household_id, roommate_id));
 
 drop policy if exists "members read settlements" on public.settlements;
 create policy "members read settlements" on public.settlements
@@ -318,5 +308,8 @@ create policy "members read settlements" on public.settlements
 -- Earlier versions let the owner and both roommates involved write these.
 drop policy if exists "owner or party manages settlements" on public.settlements;
 
-revoke all on public.roommates, public.settlements, public.roommate_logins from anon, authenticated;
-grant select on public.roommates, public.settlements to authenticated;
+revoke all on public.roommates, public.settlements, public.roommate_logins,
+              public.months, public.readings, public.recharges
+    from anon, authenticated;
+grant select on public.roommates, public.settlements, public.months, public.readings, public.recharges
+    to authenticated;
