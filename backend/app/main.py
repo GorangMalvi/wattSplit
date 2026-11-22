@@ -18,11 +18,11 @@ from datetime import date, timedelta
 from typing import Annotated, List, Optional
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import calc, db, dev_login, export, mailer, meter_report, voice
+from . import calc, db, dev_login, export, mailer, meter_report, settlement_mail, settlements, voice
 from .auth import current_claims, current_user_id
 from .models import (
     Dashboard,
@@ -51,6 +51,7 @@ from .models import (
     RunningBalance,
     SettlementCreate,
     SettlementOut,
+    SettlementResponse,
     SettleUp,
     VoicePaymentDraft,
     DevLogin,
@@ -62,7 +63,10 @@ from .models import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.open_pool()
+    reminders = settlement_mail.start_reminders()
     yield
+    if reminders:
+        reminders.set()
     db.close_pool()
 
 
@@ -377,7 +381,7 @@ def link_my_roommate(payload: LinkRoommate, member: CurrentMember):
         if payload.roommate_id is not None:
             roommate = db.link_roommate(member.hid, payload.roommate_id, member.user_id, member.is_owner)
         else:
-            roommate = db.add_roommate(
+            roommate = db.add_self(
                 member.hid,
                 name=payload.name,
                 join_date=date.today().strftime("%Y-%m"),
@@ -597,7 +601,7 @@ def delete_recharge(recharge_id: int, member: CurrentMember):
 # Settling up (roommates paying each other back)
 # ---------------------------------------------------------------------------
 def _require_settlement_party(member: Member, from_id: int, to_id: int) -> None:
-    """The owner may record any settlement; others only ones they pay or receive."""
+    """The owner may send any payment for verification; others only ones they pay or receive."""
     if member.is_owner:
         _require_roommate(member.hid, from_id)
         _require_roommate(member.hid, to_id)
@@ -608,37 +612,108 @@ def _require_settlement_party(member: Member, from_id: int, to_id: int) -> None:
         _require_roommate(member.hid, to_id)
 
 
+def _settlement_out(row: dict, member: Member, logins) -> dict:
+    return {
+        **row,
+        "receiver_joined": row["status"] != settlements.VERIFYING or row["receiver_user_id"] is not None,
+        "actions": settlements.allowed_actions(row, member.user_id, member.roommate_id, logins),
+    }
+
+
 @app.get("/api/settle-up", response_model=SettleUp)
-def settle_up(hid: HouseholdId):
-    """Who pays whom to bring every balance to zero, and what's been recorded."""
-    data = db.HouseholdData(hid)
-    return {**calc.household_settle_up(data, today=date.today().isoformat()), "settlements": data.settlement_rows}
+def settle_up(member: CurrentMember):
+    """Who pays whom to bring every balance to zero, what's in verification, and what's been recorded."""
+    data = db.HouseholdData(member.hid)
+    return {
+        **calc.household_settle_up(data, today=date.today().isoformat()),
+        "settlements": [_settlement_out(s, member, data.logins) for s in data.settlement_rows],
+    }
 
 
 @app.post("/api/settlements", response_model=SettlementOut, status_code=201)
-def create_settlement(payload: SettlementCreate, member: CurrentMember):
-    if payload.from_roommate_id == payload.to_roommate_id:
+def create_settlement(payload: SettlementCreate, member: CurrentMember, tasks: BackgroundTasks):
+    """
+    "I paid": the payment waits in verification until the receiver marks it
+    received. One the receiver records themselves is received straight away.
+    """
+    from_id, to_id = payload.from_roommate_id, payload.to_roommate_id
+    if from_id == to_id:
         raise HTTPException(status_code=422, detail="Choose two different roommates")
-    _require_settlement_party(member, payload.from_roommate_id, payload.to_roommate_id)
-    return db.add_settlement(
-        member.hid,
-        date=(payload.settlement_date or date.today()).isoformat(),
-        from_roommate_id=payload.from_roommate_id,
-        to_roommate_id=payload.to_roommate_id,
-        amount=payload.amount,
-        notes=payload.notes or "",
-        created_by=member.user_id,
-    )
+    _require_settlement_party(member, from_id, to_id)
+    # The phone's date can be a day ahead of the server's (UTC).
+    paid_on = payload.settlement_date or date.today()
+    if paid_on > date.today() + timedelta(days=1):
+        raise HTTPException(status_code=422, detail="The payment date can't be in the future")
+    amount = round(payload.amount, 2)
+    logins: set = set()
+
+    def decide(data, sent_today: int) -> str:
+        logins.update(data.logins)
+        return settlements.new_status(
+            calc.household_settle_up(data, today=date.today().isoformat()),
+            data.settlement_rows,
+            data.logins,
+            {r["id"]: r["name"] for r in data.roommate_rows},
+            user_id=member.user_id,
+            roommate_id=member.roommate_id,
+            from_id=from_id,
+            to_id=to_id,
+            amount=amount,
+            sent_today=sent_today,
+        )
+
+    try:
+        row = db.add_settlement(
+            member.hid,
+            date=paid_on.isoformat(),
+            from_roommate_id=from_id,
+            to_roommate_id=to_id,
+            amount=amount,
+            notes=payload.notes or "",
+            created_by=member.user_id,
+            decide=decide,
+        )
+    except settlements.NotAllowed as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+    tasks.add_task(settlement_mail.notify, row["status"], member.hid, row, member.user_id)
+    return _settlement_out(row, member, logins)
 
 
-@app.delete("/api/settlements/{settlement_id}", status_code=204)
-def delete_settlement(settlement_id: int, member: CurrentMember):
-    existing = db.get_settlement(member.hid, settlement_id)
-    if existing is None:
+@app.post("/api/settlements/{settlement_id}/{action}", response_model=SettlementOut)
+def respond_to_settlement(
+    settlement_id: int,
+    action: settlements.Action,
+    member: CurrentMember,
+    tasks: BackgroundTasks,
+    payload: Optional[SettlementResponse] = None,
+):
+    """Mark received / not received, cancel, or undo (which takes both roommates)."""
+    reason = " ".join(((payload.reason if payload else None) or "").split())
+    if action == "not_received" and not reason:
+        raise HTTPException(status_code=422, detail="Say why, so the payer knows what to check")
+    logins: set = set()
+
+    def check(row: dict, known_logins: set) -> None:
+        logins.update(known_logins)
+        if action not in settlements.allowed_actions(row, member.user_id, member.roommate_id, known_logins):
+            if action == "received" and row["status"] == settlements.VERIFYING:
+                raise settlements.NotAllowed(
+                    403, f"Only {row['to_roommate']}, on their own login, can mark this received"
+                )
+            raise settlements.NotAllowed(409, "You can't do that with this payment. Refresh to see where it stands.")
+
+    try:
+        changed = db.respond_settlement(member.hid, settlement_id, member.user_id, action, reason, check)
+    except settlements.NotAllowed as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+    if changed is None:
         raise HTTPException(status_code=404, detail="Payment not found")
-    _require_settlement_party(member, existing["from_roommate_id"], existing["to_roommate_id"])
-    db.delete_settlement(member.hid, settlement_id)
-    return None
+    before, after = changed
+    if action != "withdraw_undo":
+        # Who asked for an undo is cleared once it's answered, so take it from before.
+        row = {**after, "undo_side": after["undo_side"] or before["undo_side"]}
+        tasks.add_task(settlement_mail.notify, action, member.hid, row, member.user_id)
+    return _settlement_out(after, member, logins)
 
 
 # ---------------------------------------------------------------------------

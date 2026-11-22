@@ -134,6 +134,25 @@ create table if not exists public.settlements (
 
 create index if not exists settlements_household_idx on public.settlements (household_id, date);
 
+-- Verification: a payment counts once the receiver marks it received. The
+-- default keeps payments recorded before this (and by older backends) counted.
+alter table public.settlements add column if not exists status text not null default 'received'
+    check (status in ('verifying', 'received', 'not_received', 'cancelled', 'undone'));
+-- The logins it's locked to. No foreign keys: a deleted login mustn't free the lock.
+alter table public.settlements add column if not exists payer_user_id      uuid;
+alter table public.settlements add column if not exists receiver_user_id   uuid;
+alter table public.settlements add column if not exists responded_at       timestamptz;
+alter table public.settlements add column if not exists responded_by       uuid;
+alter table public.settlements add column if not exists responded_by_email text; -- masked
+alter table public.settlements add column if not exists reject_reason      text;
+-- Undoing a received payment takes both: who asked, waiting for the other.
+alter table public.settlements add column if not exists undo_side text check (undo_side in ('payer', 'receiver'));
+alter table public.settlements add column if not exists undo_requested_by  uuid;
+alter table public.settlements add column if not exists undo_requested_at  timestamptz;
+alter table public.settlements add column if not exists emailed_at         timestamptz;
+alter table public.settlements add column if not exists reminded_at        timestamptz;
+alter table public.settlements add column if not exists reminders          int not null default 0;
+
 -- Every login each roommate has had, kept after unlinking: nobody can confirm
 -- a payment from a roommate they've been, or take over someone else's name.
 create table if not exists public.roommate_logins (

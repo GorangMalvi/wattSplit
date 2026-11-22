@@ -291,6 +291,8 @@ def running_balances(data: HouseholdData, upto: Optional[str] = None,
     # has been repaid it. Counted against the main meter (balances by meter
     # still add up to the total).
     for s in getattr(data, "settlement_rows", []):
+        if s.get("status", "received") != "received":
+            continue  # in verification, not received, cancelled or undone
         if last_day is not None and not all_settlements and s["date"] > last_day:
             continue
         amount = float(s["amount"])
@@ -374,7 +376,8 @@ def calculate_month(month: str, data: HouseholdData) -> Dict[str, Any]:
     }
 
 
-def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0) -> Dict[str, Any]:
+def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0,
+              waiting: Iterable[Dict[str, Any]] = ()) -> Dict[str, Any]:
     """
     Who pays whom so that every balance ends at zero.
 
@@ -385,10 +388,14 @@ def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0) -> Dic
     that is a gap (the meter's starting balance, recharges not entered in the
     app), shared equally. Then the biggest debtor pays the biggest creditor
     until nobody owes, which takes the fewest payments.
+
+    ``waiting``: payments in verification. They don't change what anyone owes
+    yet, but they're reserved, so only the rest is suggested.
     """
     people = [b for b in balances if b.get("roommate_id") is not None]
     if not people:
-        return {"transfers": [], "unpaid_total": 0.0, "unpaid_each": 0.0, "meter_balance": round(meter_balance, 2)}
+        return {"transfers": [], "positions": [], "unpaid_total": 0.0, "unpaid_each": 0.0,
+                "meter_balance": round(meter_balance, 2)}
     gap = round(sum(b["balance"] for b in people) + meter_balance, 2)
     if abs(gap) <= 0.01 * len(people):
         gap = 0.0  # each balance is rounded to paise: up to a paisa each is rounding, not a gap
@@ -396,13 +403,39 @@ def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0) -> Dic
     owes = {b["roommate_id"]: b["balance"] - each for b in people}
     names = {b["roommate_id"]: b["name"] for b in people}
 
+    owed_now = dict(owes)
+    waiting_out: Dict[int, float] = {}
+    waiting_in: Dict[int, float] = {}
+    for w in waiting:
+        payer, receiver, amount = w["from_roommate_id"], w["to_roommate_id"], float(w["amount"])
+        for rid, name in ((payer, w["from_roommate"]), (receiver, w["to_roommate"])):
+            names.setdefault(rid, name)
+            owed_now.setdefault(rid, 0.0)
+            owes.setdefault(rid, 0.0)
+        waiting_out[payer] = waiting_out.get(payer, 0.0) + amount
+        waiting_in[receiver] = waiting_in.get(receiver, 0.0) + amount
+        owes[payer] -= amount
+        owes[receiver] += amount
+    positions = [
+        {
+            "roommate_id": rid, "name": names[rid],
+            "balance": round(owed_now[rid], 2),
+            "waiting_out": round(waiting_out.get(rid, 0.0), 2),
+            "waiting_in": round(waiting_in.get(rid, 0.0), 2),
+            # Left once everything waiting is counted.
+            "to_pay": round(max(owes[rid], 0.0), 2),
+            "to_receive": round(max(-owes[rid], 0.0), 2),
+        }
+        for rid in owes
+    ]
+
     transfers = []
     while True:
         debtor = max(owes, key=lambda r: owes[r])
         creditor = min(owes, key=lambda r: owes[r])
         amount = round(min(owes[debtor], -owes[creditor]), 2)
-        if amount < 0.01:
-            break
+        if amount < 0.02:
+            break  # a paisa is rounding, left over from payments of rounded amounts
         transfers.append({
             "from_roommate_id": debtor, "from_roommate": names[debtor],
             "to_roommate_id": creditor, "to_roommate": names[creditor],
@@ -410,37 +443,78 @@ def settle_up(balances: List[Dict[str, Any]], meter_balance: float = 0.0) -> Dic
         })
         owes[debtor] -= amount
         owes[creditor] += amount
-    return {"transfers": transfers, "unpaid_total": gap, "unpaid_each": round(each, 2),
+    return {"transfers": transfers, "positions": positions, "unpaid_total": gap, "unpaid_each": round(each, 2),
             "meter_balance": round(meter_balance, 2)}
 
 
-def household_settle_up(data: HouseholdData, today: str) -> Dict[str, Any]:
+def settle_through(data: HouseholdData) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """
-    settle_up for the household as of the last billed month: its bills, the
-    payments up to its end, every settle-up payment, and what was left in the
-    meter then (its closing balance). Payments after that month are for a
-    month not billed yet, so they wait; ones dated after ``today`` are listed
-    as likely date mistakes.
+    The month settle up works up to, and what later billed months wait for.
+
+    A month can be settled up to once it has a bill and, up to it, nobody
+    active is missing a reading that a later one hasn't caught up (a skipped
+    month is billed with the next reading). Settling a half-entered month
+    would have people confirm wrong amounts.
     """
+    months = sorted(data.get_months()["month"].dropna().astype(str).tolist())
     billed = []
-    for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
+    for m in months:
         try:
             _split_month(m, data)
             billed.append(m)
         except ValueError:
             pass
-    last = billed[-1] if billed else None
+    if not billed:
+        return None, []
+
+    roommates, history = data.get_roommates(), data.readings_by_roommate()
+    read = {name: [m for m, (current, _) in by_month.items() if current is not None]
+            for name, by_month in history.items()}
+    missing = [(m, str(name)) for m in months for name in roommates["name"]
+               if m not in read.get(str(name), []) and _roommate_is_active(str(name), m, roommates)]
+
+    def unread(upto: str) -> List[Tuple[str, str]]:
+        return [(m, name) for m, name in missing
+                if m <= upto and not any(m < later <= upto for later in read.get(name, []))]
+
+    def has_bill(m: str) -> bool:
+        row = data.get_month(m)
+        return any(pd.notna(row[k]) and float(row[k]) > 0 for k in ("monthly_bill", "dg_bill"))
+
+    through = next((m for m in reversed(billed) if has_bill(m) and not unread(m)), None)
+    latest = billed[-1]
+    if through == latest:
+        return through, []
+    waiting: Dict[str, Dict[str, Any]] = {}
+    for m, name in unread(latest):
+        waiting.setdefault(m, {"month": m, "missing": [], "needs_bill": False})["missing"].append(name)
+    if not has_bill(latest):
+        waiting.setdefault(latest, {"month": latest, "missing": [], "needs_bill": False})["needs_bill"] = True
+    return through, [waiting[m] for m in sorted(waiting)]
+
+
+def household_settle_up(data: HouseholdData, today: str) -> Dict[str, Any]:
+    """
+    settle_up for the household as of the last complete month (settle_through):
+    its bills, the payments up to its end, every settle-up payment, and what
+    was left in the meter then (its closing balance). Payments after that month
+    are for a month not settled yet, so they wait; ones dated after ``today``
+    are listed as likely date mistakes.
+    """
+    last, waiting_for = settle_through(data)
     meter_balance = 0.0
     if last is not None:
         closing = data.get_month(last)["meter_closing_balance"]
         meter_balance = float(closing) if closing is not None and pd.notna(closing) else 0.0
     balances = (household_balances(data, upto=last, all_settlements=True) if last is not None else [])
-    plan = settle_up(balances, meter_balance)
+    waiting = [s for s in getattr(data, "settlement_rows", []) if s.get("status") == "verifying"]
+    plan = settle_up(balances, meter_balance, waiting)
 
     later = [r for r in data.recharge_rows if last is not None and r["date"] > _month_end_date(last)]
     return {
         **plan,
         "through_month": last,
+        "waiting_for": waiting_for,
         "later_payments_total": round(sum(float(r["amount"]) for r in later), 2),
         "future_payments": [
             {"id": r["id"], "date": r["date"], "roommate": r["roommate"], "amount": r["amount"], "meter": r.get("meter") or "main"}

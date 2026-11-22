@@ -817,7 +817,8 @@ function App() {
 
                 <SettleUpCard
                   refreshKey={history}
-                  canRecord={(fromId, toId) => isOwner || [fromId, toId].includes(myRoommateId)}
+                  myId={myRoommateId}
+                  isOwner={isOwner}
                   onChanged={() => loadMonthData(selectedMonth, { quiet: true })}
                 />
               </>

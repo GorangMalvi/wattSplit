@@ -46,6 +46,18 @@ total_bill_i        = energy_charge_i + dg_share_i
 balance_i           = total_bill_i - recharges_received_i
 ```
 
+## Settle up
+```
+verifying --received (receiver's own login)--> received --undo (both agree)--> undone
+          --not received (with a reason)-----> not_received
+          --cancel (payer / who sent it)-----> cancelled
+
+only `received` changes balances; `verifying` is reserved from what's suggested
+a payment can't be more than the payer has left to pay, or the receiver left to get
+settle up works up to the last month with a bill and no missing readings
+  (a skipped reading counts as caught up by a later one)
+```
+
 ## Tech Stack
 - **Backend**: Python 3.11+, FastAPI, Uvicorn, Pandas, OpenPyXL
 - **Frontend**: React 18, Vite, Tailwind CSS, Axios (or fetch)

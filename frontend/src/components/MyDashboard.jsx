@@ -13,6 +13,7 @@ import BalanceCard from './BalanceCard';
 import ErrorAlert from './ErrorAlert';
 import LoadingSpinner from './LoadingSpinner';
 import MeterBadge, { METERS } from './MeterBadge';
+import SettleUpCard from './SettleUpCard';
 import SummaryCard from './SummaryCard';
 import VoicePaymentButton, { canRecord } from './VoicePaymentButton';
 
@@ -566,6 +567,8 @@ function MyDashboard({ active = true, isOwner = false, roommates, onLinkChange, 
           subtext={`Billed so far: ${formatMoney(dash.total_bill_cumulative)}`}
         />
       </div>
+
+      <SettleUpCard personal myId={roommate.id} refreshKey={dash} onChanged={load} />
 
       <div className="card">
         <h3 className="mb-1 text-lg font-semibold text-slate-900">By meter</h3>

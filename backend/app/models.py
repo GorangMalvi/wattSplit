@@ -365,11 +365,15 @@ class Dashboard(BaseModel):
 class SettlementCreate(BaseModel):
     from_roommate_id: int
     to_roommate_id: int
-    amount: float = Field(..., gt=0)
+    amount: float = Field(..., ge=0.01, allow_inf_nan=False)
     settlement_date: Optional[date] = Field(None, alias="date")
-    notes: Optional[str] = ""
+    notes: Optional[str] = Field("", max_length=200)
 
     model_config = {"populate_by_name": True}
+
+
+class SettlementResponse(BaseModel):
+    reason: Optional[str] = Field(None, max_length=200, description="Required for not_received")
 
 
 class SettlementOut(BaseModel):
@@ -381,6 +385,29 @@ class SettlementOut(BaseModel):
     to_roommate: str
     amount: float
     notes: str
+    status: Literal["verifying", "received", "not_received", "cancelled", "undone"]
+    receiver_joined: bool  # False: waits until the receiver joins with the owner's invite
+    emailed: bool
+    responded_by_email: Optional[str] = None  # masked
+    reject_reason: Optional[str] = None
+    undo_side: Optional[Literal["payer", "receiver"]] = None
+    actions: List[str] = Field(..., description="What the signed-in user may do (settlements.Action)")
+
+
+class SettlePosition(BaseModel):
+    roommate_id: int
+    name: str
+    balance: float  # owes (+) / is owed (-), until payments are received
+    waiting_out: float
+    waiting_in: float
+    to_pay: float  # left once what's waiting is counted
+    to_receive: float
+
+
+class SettleWaitingFor(BaseModel):
+    month: str
+    missing: List[str]
+    needs_bill: bool
 
 
 class Transfer(BaseModel):
@@ -400,8 +427,10 @@ class FuturePayment(BaseModel):
 
 
 class SettleUp(BaseModel):
-    """Payments that leave everyone even, as of the last billed month, and the settlements recorded so far."""
+    """Payments that leave everyone even, as of the last complete month, and the settlements recorded so far."""
     transfers: List[Transfer]
+    positions: List[SettlePosition] = []
+    waiting_for: List[SettleWaitingFor] = []
     # Electricity nobody has recorded paying for, shared equally in the transfers
     # (0 when every payment is recorded).
     unpaid_total: float

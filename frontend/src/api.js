@@ -133,14 +133,18 @@ export const voicePayment = (audio, todayDate) =>
     })
     .then((res) => res.data);
 
-// Settling up: who pays whom so every balance reaches zero ({ transfers,
-// unpaid_total, unpaid_each, settlements }), and recording those payments.
+// Settling up: who pays whom so everyone ends up even ({ transfers, positions,
+// settlements, waiting_for, ... }). A payment sent waits in verification until
+// the receiver marks it received.
 export const getSettleUp = () => api.get('/settle-up').then((res) => res.data);
 
 export const createSettlement = (payload) =>
   api.post('/settlements', payload).then((res) => res.data);
 
-export const deleteSettlement = (id) => api.delete(`/settlements/${id}`);
+// action: received | not_received (with a reason) | cancel | request_undo |
+// agree_undo | decline_undo | withdraw_undo
+export const respondSettlement = (id, action, reason) =>
+  api.post(`/settlements/${id}/${action}`, { reason }).then((res) => res.data);
 
 // Calculated split + balances for a month
 export const getCalculate = (month) =>

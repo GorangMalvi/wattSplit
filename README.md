@@ -134,8 +134,9 @@ Invite links and emails to flatmates need a public web address and a verified se
 - Enter per-room meter readings and recharges/payments; each payment is for the **Main** meter or the **DG**, and balances are tracked per meter (energy charge vs main payments, DG share vs DG payments)
 - Auto-calculate the split, including common units and DG charges
 - **My dashboard**: each flatmate links their login to their roommate (the owner picks their own name; anyone else joins an existing name with the owner's invite, or adds themselves as a new one), then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
-- Permissions: the household owner edits everything; other members edit only their own readings and payments
-- Balances to date (all bills so far minus all payments)
+- Permissions: the household owner edits everything except confirming a payment for someone else; other members edit only their own readings and payments
+- **Settle up with verification**: shows who pays whom, up to the last month with a bill and everyone's readings. The payer enters an amount (part payments are fine) and taps *I paid*; it stays **In verification**, reserved but not counted, until the receiver signs in on their own login and marks it received, or not received with a reason. Nobody else can confirm it, the owner included. A receiver without a login confirms after joining with the owner's invite. Undoing a received payment takes both roommates. Both are emailed, and with `SETTLEMENT_REMINDERS=1` (live server only) the receiver is reminded every 3 days, up to 5 times
+- Balances to date (all bills so far minus all received payments)
 - Download a monthly Excel report
 
 ## Project Structure
@@ -147,6 +148,8 @@ Electricity_bill_dist/
 │       ├── auth.py         # Supabase token verification
 │       ├── db.py           # Postgres access, household-scoped
 │       ├── calc.py         # Bill split math
+│       ├── settlements.py  # Who may confirm, cancel or undo a settle-up payment
+│       ├── settlement_mail.py # Settle-up emails and reminders
 │       ├── export.py       # Excel report
 │       ├── schema.sql      # Tables + RLS policies
 │       └── init_schema.py  # Applies schema.sql
