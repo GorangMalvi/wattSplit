@@ -508,10 +508,37 @@ def update_month(hid: UUID, month: str, **kwargs) -> Optional[Dict[str, Any]]:
         ).fetchone()
 
 
-def delete_month(hid: UUID, month: str) -> bool:
-    """Delete the month and its meter readings (they cascade). Payments are kept:
-    they belong to dates, not to months."""
-    return _execute("DELETE FROM months WHERE household_id = %s AND month = %s", (hid, month)) > 0
+def delete_month(hid: UUID, month: str,
+                 keep_starts: Callable[[List[str], Dict[str, tuple], str], Dict[str, float]]) -> bool:
+    """
+    Delete the month and its meter readings (they cascade). Payments are kept:
+    they belong to dates, not to months. ``keep_starts`` (calc.starts_to_keep)
+    gives the start readings later months need first, or raises ValueError.
+    """
+    with _pool.connection() as conn, conn.transaction():
+        lock_household(conn, hid)
+        # Locks every month, so no reading can be saved while this works out the starts.
+        months = [r["month"] for r in conn.execute(
+            "SELECT month FROM months WHERE household_id = %s ORDER BY month FOR UPDATE", (hid,)
+        ).fetchall()]
+        if month not in months:
+            return False
+        by_roommate: Dict[int, Dict[str, tuple]] = {}
+        for r in conn.execute(
+            "SELECT month, roommate_id, current_reading, start_reading FROM readings WHERE household_id = %s", (hid,)
+        ).fetchall():
+            by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (r["current_reading"], r["start_reading"])
+        for rid, readings in by_roommate.items():
+            for later, start in keep_starts(months, readings, month).items():
+                conn.execute(
+                    """
+                    INSERT INTO readings (household_id, month, roommate_id, start_reading) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (household_id, month, roommate_id) DO UPDATE SET start_reading = excluded.start_reading
+                    """,
+                    (hid, later, rid, start),
+                )
+        conn.execute("DELETE FROM months WHERE household_id = %s AND month = %s", (hid, month))
+        return True
 
 
 def import_meter_months(hid: UUID, months: List[Dict[str, Any]]) -> None:

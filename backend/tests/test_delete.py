@@ -21,13 +21,13 @@ def clear_overrides():
 
 def test_owner_deletes_a_month(monkeypatch):
     calls = []
-    monkeypatch.setattr(db, "delete_month", lambda hid, month: calls.append((str(hid), month)) or True)
+    monkeypatch.setattr(db, "delete_month", lambda hid, month, keep: calls.append((str(hid), month)) or True)
     r = client_as("owner", monkeypatch).delete("/api/months/2026-06")
     assert r.status_code == 204 and calls == [(HID, "2026-06")]
 
 
 def test_deleting_a_missing_month_is_404(monkeypatch):
-    monkeypatch.setattr(db, "delete_month", lambda hid, month: False)
+    monkeypatch.setattr(db, "delete_month", lambda hid, month, keep: False)
     assert client_as("owner", monkeypatch).delete("/api/months/2026-01").status_code == 404
 
 

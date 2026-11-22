@@ -584,7 +584,9 @@ function App({ household, onHouseholdDeleted }) {
               Delete <span className="font-semibold">{formatMonth(selectedMonth)}</span> and its meter readings?
               Payments stay (they belong to their dates).
               {months.some((m) => m.month > selectedMonth) &&
-                ' The month after it will then start from the readings of the month before it.'}
+                (months.some((m) => m.month < selectedMonth)
+                  ? ' The month after it will then start from the readings of the month before it.'
+                  : ' The month after it keeps counting from the readings it starts from now.')}
             </span>
             <span className="flex gap-2">
               <button onClick={handleDeleteMonth} disabled={deletingMonth} className="btn-danger">

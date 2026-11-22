@@ -115,6 +115,43 @@ def reading_error(months: Iterable[str], before: Readings, after: Readings, mont
     return None
 
 
+def starts_to_keep(months: Iterable[str], readings: Readings, month: str) -> Dict[str, float]:
+    """
+    Start readings to save so that deleting ``month`` is safe, for one roommate.
+
+    A later month normally carries on from the month before the deleted one.
+    When there's no reading to carry on from, or an old start reading would
+    take over, it keeps counting from where it did. Raises ValueError when a
+    meter would run backwards.
+    """
+    months = sorted(months)
+    before = reading_starts(months, readings)
+    left = [m for m in months if m != month]
+    after = {m: v for m, v in readings.items() if m != month}
+    later = [m for m in left if m > month]
+    kept: Dict[str, float] = {}
+    for m in later:
+        now, old = reading_starts(left, after)[m], before[m].previous
+        if old is None or now.previous == old or not now.editable:
+            continue
+        current, start = after.get(m, (None, None))
+        unknown = now.previous is None and (current is not None or m == later[0])
+        if start is not None or unknown:
+            after[m], kept[m] = (current, old), old
+
+    starts = reading_starts(left, after)
+    for m in later:
+        current, now, old = after.get(m, (None, None))[0], starts[m].previous, before[m].previous
+        if current is None or now is None or current >= now:
+            continue
+        if old is None or current >= old:  # it was fine until now
+            raise ValueError(
+                f"Deleting this month would put the {month_name[int(m[5:7])]} {m[:4]} reading below "
+                f"the one before it ({_plain(now)}). Correct that reading first."
+            )
+    return kept
+
+
 def _plain(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 

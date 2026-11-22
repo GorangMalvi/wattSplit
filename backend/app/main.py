@@ -490,7 +490,11 @@ def update_month(month: MonthParam, payload: MonthUpdate, hid: OwnedHouseholdId)
 @app.delete("/api/months/{month}", status_code=204)
 def delete_month(month: MonthParam, hid: OwnedHouseholdId):
     """Owner: delete the month and its meter readings. Payments stay (they're by date)."""
-    if not db.delete_month(hid, month):
+    try:
+        deleted = db.delete_month(hid, month, calc.starts_to_keep)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not deleted:
         raise HTTPException(status_code=404, detail="Month not found")
     return None
 
