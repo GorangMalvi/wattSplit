@@ -442,7 +442,9 @@ def get_month(month: MonthParam, hid: HouseholdId):
     readings = db.list_readings(hid)
     by_roommate: dict = {}
     for r in readings:
-        by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (r["current_reading"], r["start_reading"])
+        by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (
+            r["current_reading"], r["start_reading"], r["old_meter_final"]
+        )
     fallbacks = []
     for rid, history in by_roommate.items():
         last_known = calc.reading_starts([m["month"] for m in months], history)[month].fallback
@@ -548,15 +550,30 @@ def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, 
         raise HTTPException(status_code=404, detail="Month not found")
     _require_editable_roommate(member, roommate_id)
     fields = payload.model_dump(include=payload.model_fields_set - {"new_meter"})
-    current, start = history[month]
+    current, start, old_final = calc.Reading(*history[month])
+    if "old_meter_final" in fields and fields["old_meter_final"] is None:
+        if old_final is None:
+            del fields["old_meter_final"]  # nothing to clear
+        else:
+            # Not replaced after all: the new meter's start goes with it, or it would become the month's start.
+            fields.setdefault("start_reading", None)
     if fields.get("start_reading") == 0 and start != 0 and not payload.new_meter:
         raise HTTPException(
             status_code=422,
             detail="A start reading of 0 is only for a brand-new meter. Otherwise enter what the meter showed.",
         )
-    changed = (fields.get("current_reading", current), fields.get("start_reading", start))
+    changed = (
+        fields.get("current_reading", current),
+        fields.get("start_reading", start),
+        fields.get("old_meter_final", old_final),
+    )
     _require_forward_meter(history, month, changed)
-    db.set_reading(member.hid, month, roommate_id, **fields)
+    try:
+        db.set_reading(member.hid, month, roommate_id, **fields)
+    except db.SchemaBehind:
+        raise HTTPException(
+            status_code=503, detail="Meter replacement isn't switched on yet: the database needs its update first."
+        )
     return {"month": month, "roommate_id": roommate_id, **fields}
 
 
@@ -565,7 +582,7 @@ def delete_reading(month: MonthParam, roommate_id: int, member: CurrentMember):
     _require_editable_roommate(member, roommate_id)
     history = db.roommate_readings(member.hid, roommate_id)
     if month in history:
-        _require_forward_meter(history, month, (None, None))
+        _require_forward_meter(history, month, (None, None, None))
     if not db.delete_reading(member.hid, month, roommate_id):
         raise HTTPException(status_code=404, detail="No reading for that month")
     return None

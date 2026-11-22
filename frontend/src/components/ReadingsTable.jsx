@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import MeterReplacement from './MeterReplacement';
 
 const fmt = (v) => (v === null || v === undefined ? '-' : v.toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
@@ -6,6 +7,7 @@ const fmt = (v) => (v === null || v === undefined ? '-' : v.toLocaleString(undef
 //         fallback_reading, current_reading, sub_units }. previous_editable: no
 // reading last month, so the start reading can be typed in (saved as
 // start_reading); left blank, units count from fallback_reading (last known).
+// old_meter_final: set when the meter was replaced that month (MeterReplacement).
 // onUpdate(roommateId, { current_reading } | { start_reading }); null clears.
 // canEdit(roommateId): whether this user may change that roommate's readings.
 // mainUnits: the main meter's units this month, for the total row (optional).
@@ -149,7 +151,27 @@ function ReadingsTable({ rows, onUpdate, loading, canEdit = () => true, mainUnit
                   )}
                 </td>
                 <td className="text-right">
-                  {editable ? input(row, 'current_reading') : <span className="tabular-nums">{fmt(row.current_reading)}</span>}
+                  {editable ? (
+                    <div className="flex flex-col items-end gap-1">
+                      {input(row, 'current_reading')}
+                      <MeterReplacement
+                        name={row.name}
+                        previous={row.previous_reading}
+                        current={row.current_reading}
+                        start={row.start_reading}
+                        oldFinal={row.old_meter_final}
+                        disabled={loading}
+                        onSave={(fields) => onUpdate(row.roommate_id, fields)}
+                      />
+                    </div>
+                  ) : (
+                    <span className="tabular-nums">
+                      {fmt(row.current_reading)}
+                      {row.old_meter_final !== null && (
+                        <span className="block text-xs text-slate-400">Meter replaced</span>
+                      )}
+                    </span>
+                  )}
                 </td>
                 <td className="text-right tabular-nums">{fmt(row.sub_units)}</td>
               </tr>

@@ -13,6 +13,7 @@ import BalanceCard from './BalanceCard';
 import ErrorAlert from './ErrorAlert';
 import LoadingSpinner from './LoadingSpinner';
 import MeterBadge, { METERS } from './MeterBadge';
+import MeterReplacement from './MeterReplacement';
 import SettleUpCard from './SettleUpCard';
 import SummaryCard from './SummaryCard';
 import VoicePaymentButton, { canRecord } from './VoicePaymentButton';
@@ -136,7 +137,16 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   const startReading = askStart ? parseReading(startValue) : null;
   const fallback = selected?.fallback_reading ?? null; // last known reading, used without a start
   const previous = askStart ? (startReading ?? fallback) : selected?.previous_reading;
-  const units = reading === null || previous == null ? null : reading - previous;
+  const oldFinal = selected?.old_meter_final ?? null; // replaced this month: reading is on the new meter
+  const replaced = oldFinal !== null;
+  const tooLow =
+    reading !== null && previous != null && reading < (replaced ? selected.start_reading : previous);
+  const units =
+    reading === null || previous == null
+      ? null
+      : replaced
+        ? oldFinal - previous + reading - selected.start_reading
+        : reading - previous;
 
   // Only what changed: the month-end reading and/or the start reading (blank clears it).
   const changes = {};
@@ -165,105 +175,135 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
     }
   };
 
+  const saveReplacement = async (fields) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateReading(month, roommateId, fields);
+      await onSaved();
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // The replacement form sits outside this one: Enter in it mustn't submit the reading.
   return (
-    <form onSubmit={save} className="space-y-3">
-      {error && <ErrorAlert message={error} />}
-      <div className={`grid grid-cols-1 gap-3 ${askStart ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="reading-month" className="text-xs font-medium text-slate-500">
-            Month
-          </label>
-          <select id="reading-month" value={month} onChange={(e) => setMonth(e.target.value)}>
-            {options.map((m) => (
-              <option key={m.month} value={m.month}>
-                {formatMonth(m.month)}
-                {m.current_reading === null ? ' (reading due)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-        {askStart && (
+    <div className="space-y-3">
+      <form onSubmit={save} className="space-y-3">
+        {error && <ErrorAlert message={error} />}
+        <div className={`grid grid-cols-1 gap-3 ${askStart ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
           <div className="flex flex-col gap-1">
-            <label htmlFor="reading-start" className="text-xs font-medium text-slate-500">
-              Start reading
+            <label htmlFor="reading-month" className="text-xs font-medium text-slate-500">
+              Month
+            </label>
+            <select id="reading-month" value={month} onChange={(e) => setMonth(e.target.value)}>
+              {options.map((m) => (
+                <option key={m.month} value={m.month}>
+                  {formatMonth(m.month)}
+                  {m.current_reading === null ? ' (reading due)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          {askStart && (
+            <div className="flex flex-col gap-1">
+              <label htmlFor="reading-start" className="text-xs font-medium text-slate-500">
+                Start reading
+              </label>
+              <input
+                id="reading-start"
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0"
+                placeholder="Meter at month start"
+                value={startValue}
+                onChange={(e) => setStartValue(e.target.value)}
+              />
+            </div>
+          )}
+          <div className="flex flex-col gap-1">
+            <label htmlFor="reading-value" className="text-xs font-medium text-slate-500">
+              {replaced ? 'New meter reading' : askStart ? 'End reading' : 'Meter reading'}
             </label>
             <input
-              id="reading-start"
+              id="reading-value"
               type="number"
               inputMode="decimal"
               step="0.01"
               min="0"
-              placeholder="Meter at month start"
-              value={startValue}
-              onChange={(e) => setStartValue(e.target.value)}
+              placeholder="e.g. 1234.5"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
             />
           </div>
-        )}
-        <div className="flex flex-col gap-1">
-          <label htmlFor="reading-value" className="text-xs font-medium text-slate-500">
-            {askStart ? 'End reading' : 'Meter reading'}
-          </label>
-          <input
-            id="reading-value"
-            type="number"
-            inputMode="decimal"
-            step="0.01"
-            min="0"
-            placeholder="e.g. 1234.5"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-          />
         </div>
-      </div>
-      <p className="text-sm text-slate-500">
-        {askStart ? (
-          previous == null ? (
-            <>No reading last month: enter your meter at the start of this month.</>
-          ) : startReading === null ? (
-            <>
-              No reading last month, so counting from your last known reading:{' '}
-              <span className="font-medium">{formatNumber(previous)}</span>
-            </>
+        <p className="text-sm text-slate-500">
+          {askStart ? (
+            previous == null ? (
+              <>No reading last month: enter your meter at the start of this month.</>
+            ) : startReading === null ? (
+              <>
+                No reading last month, so counting from your last known reading:{' '}
+                <span className="font-medium">{formatNumber(previous)}</span>
+              </>
+            ) : (
+              <>
+                Start of month: <span className="font-medium">{formatNumber(previous)}</span>
+              </>
+            )
           ) : (
             <>
-              Start of month: <span className="font-medium">{formatNumber(previous)}</span>
+              Last reading: <span className="font-medium">{formatNumber(previous)}</span>
             </>
-          )
-        ) : (
-          <>
-            Last reading: <span className="font-medium">{formatNumber(previous)}</span>
-          </>
-        )}
-        {units !== null && (previous != null || !askStart) && (
-          <>
-            {' '}
-            · Units this month:{' '}
-            <span className={`font-medium ${units < 0 ? 'text-rose-600' : 'text-slate-800'}`}>
-              {formatNumber(units)}
-            </span>
-          </>
-        )}
-      </p>
-      {startMissing && (
-        <p className="text-sm text-amber-700">
-          Enter the start reading too: what your meter showed at the start of the month, or when you moved in.
+          )}
+          {units !== null && (previous != null || !askStart) && (
+            <>
+              {' '}
+              · Units this month:{' '}
+              <span className={`font-medium ${tooLow ? 'text-rose-600' : 'text-slate-800'}`}>
+                {formatNumber(units)}
+              </span>
+            </>
+          )}
         </p>
-      )}
-      {startIsZero && (
-        <label className="flex items-center gap-2 text-sm text-amber-700">
-          <input type="checkbox" checked={newMeter} onChange={(e) => setNewMeter(e.target.checked)} />
-          This is a brand-new meter that starts at 0
-        </label>
-      )}
-      {units !== null && units < 0 && (
-        <p className="text-sm text-rose-600">
-          This is lower than the start of the month. Check the meter before saving.
-        </p>
-      )}
-      <button type="submit" disabled={saving || !canSave} className="btn-primary">
-        {saving ? 'Saving…' : selected?.current_reading === null ? 'Submit reading' : 'Update reading'}
-      </button>
-    </form>
+        {startMissing && (
+          <p className="text-sm text-amber-700">
+            Enter the start reading too: what your meter showed at the start of the month, or when you moved in.
+          </p>
+        )}
+        {startIsZero && (
+          <label className="flex items-center gap-2 text-sm text-amber-700">
+            <input type="checkbox" checked={newMeter} onChange={(e) => setNewMeter(e.target.checked)} />
+            This is a brand-new meter that starts at 0
+          </label>
+        )}
+        {tooLow && (
+          <p className="text-sm text-rose-600">
+            This is lower than the start of the month. Check the meter before saving.
+            {!replaced && ' If it was changed, use “Meter replaced?” below.'}
+          </p>
+        )}
+        <button type="submit" disabled={saving || !canSave} className="btn-primary">
+          {saving ? 'Saving…' : selected?.current_reading === null ? 'Submit reading' : 'Update reading'}
+        </button>
+      </form>
+      <MeterReplacement
+        key={month}
+        name="Your"
+        previous={previous}
+        current={selected?.current_reading ?? null}
+        start={selected?.start_reading ?? null}
+        oldFinal={oldFinal}
+        typedEnd={reading}
+        disabled={saving}
+        onSave={saveReplacement}
+      />
+    </div>
   );
 }
 

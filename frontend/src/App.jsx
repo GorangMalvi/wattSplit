@@ -288,8 +288,10 @@ function App({ household, onHouseholdDeleted }) {
       await updateReading(selectedMonth, roommateId, fields);
       // In place, so readings typed in other rows but not saved yet aren't lost.
       await loadMonthData(selectedMonth, { quiet: true });
+      return true;
     } catch (err) {
       setReadingError(err.message);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -485,19 +487,26 @@ function App({ household, onHouseholdDeleted }) {
         const carried = carriedById[rm.id];
         const start = readingById[rm.id]?.start_reading ?? null;
         const fallback = fallbackById[rm.id] ?? null;
-        const previous = carried ?? start ?? fallback;
+        // Replaced meter: the start reading is the new one's, the month still counts from the old one's.
+        const oldFinal = readingById[rm.id]?.old_meter_final ?? null;
+        const previous = carried ?? (oldFinal === null ? start : null) ?? fallback;
         const current = readingById[rm.id]?.current_reading ?? null;
         return {
           roommate_id: rm.id,
           name: rm.name,
           previous_reading: previous,
-          previous_editable: carried === undefined,
+          previous_editable: carried === undefined && oldFinal === null,
+          old_meter_final: oldFinal,
           start_reading: start,
           fallback_reading: fallback,
           current_reading: current,
           sub_units:
             splitById[rm.id]?.sub_units ??
-            (current !== null && previous !== null ? current - previous : null),
+            (current !== null && previous !== null
+              ? oldFinal !== null
+                ? oldFinal - previous + current - start
+                : current - previous
+              : null),
         };
       });
   }, [roommates, monthData, splitRows, selectedMonth]);
@@ -817,6 +826,7 @@ function App({ household, onHouseholdDeleted }) {
                     <LoadingSpinner />
                   ) : (
                     <ReadingsTable
+                      key={selectedMonth}
                       rows={readingRows}
                       onUpdate={handleReadingUpdate}
                       canEdit={canEdit}

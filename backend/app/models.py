@@ -154,6 +154,9 @@ class ReadingOut(BaseModel):
     roommate_id: int
     current_reading: Optional[float] = Field(None, description="Sub-meter at month end")
     start_reading: Optional[float] = Field(None, description="Sub-meter at month start, when entered")
+    old_meter_final: Optional[float] = Field(
+        None, description="Meter replaced this month: the old one's last reading (the other two are the new one's)"
+    )
 
 
 class PreviousReading(BaseModel):
@@ -162,15 +165,16 @@ class PreviousReading(BaseModel):
 
 
 class ReadingUpdate(BaseModel):
-    """Send either or both; a field sent as null is cleared."""
+    """Send any of the readings; a field sent as null is cleared."""
     current_reading: Optional[float] = Field(None, ge=0)
     start_reading: Optional[float] = Field(None, ge=0)
+    old_meter_final: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     new_meter: bool = Field(False, description="Confirms a start_reading of 0: the meter is brand new")
 
     @model_validator(mode="after")
     def something_to_set(self) -> "ReadingUpdate":
-        if not self.model_fields_set & {"current_reading", "start_reading"}:
-            raise ValueError("Send current_reading and/or start_reading")
+        if not self.model_fields_set & {"current_reading", "start_reading", "old_meter_final"}:
+            raise ValueError("Send current_reading, start_reading and/or old_meter_final")
         return self
 
 
@@ -323,6 +327,7 @@ class DashboardMonth(BaseModel):
     previous_editable: bool = Field(..., description="No reading last month: start_reading can be set")
     start_reading: Optional[float]
     fallback_reading: Optional[float] = Field(None, description="Last known reading, used without a start_reading")
+    old_meter_final: Optional[float] = None  # meter replaced this month
     current_reading: Optional[float]
     sub_units: Optional[float]
     is_active: bool

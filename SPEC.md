@@ -36,6 +36,8 @@ for each active roommate:
                        else the last known reading (a skipped month)
   sub_units_i       = current_reading_i - previous_reading_i   # readings that make this negative are rejected
                                                                # a first reading needs a start reading; 0 = new meter, confirmed
+  if the meter was replaced that month:
+  sub_units_i       = (old_meter_final_i - previous_reading_i) + (current_reading_i - new_meter_start_i)
 common_units        = main_units - sum(sub_units_i)
 common_share        = common_units / count(active_roommates)
 total_units_i       = sub_units_i + common_share

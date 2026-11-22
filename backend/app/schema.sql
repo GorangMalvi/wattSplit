@@ -80,6 +80,12 @@ alter table public.readings add column if not exists start_reading double precis
     check (start_reading >= 0);
 alter table public.readings alter column current_reading drop not null;
 
+-- old_meter_final: set when the meter was replaced that month. It's the old
+-- meter's last reading; start_reading and current_reading are then the new
+-- meter's. The backend reads fine before this column exists.
+alter table public.readings add column if not exists old_meter_final double precision
+    check (old_meter_final >= 0);
+
 create table if not exists public.recharges (
     id           bigint generated always as identity primary key,
     household_id uuid not null,
