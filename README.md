@@ -125,7 +125,7 @@ Invite links and emails to flatmates need a public web address and a verified se
 ## Features
 - Passwordless sign-in with an emailed one-time code; households with invite codes
 - **Invite roommates by email**: the owner adds a roommate with an email (or clicks Invite). They get a link and a personal code; signing in with that email joins the household and links them to that roommate. The owner can copy the link/code, resend or revoke; invites expire after 14 days
-- Manage roommates (join/leave months, active flag)
+- Manage roommates (join/leave months, active flag). Unticking Active sets the leave month to their last month with a reading, so past bills stay the same
 - Create months; the main meter start reading carries over from the previous month
 - **Prepaid meter balances by hand**: each month can take the meter's opening balance, recharge and closing balance; the Monthly Bill is then worked out as opening + recharge − closing, and a new month's opening balance carries over from the last closing balance
 - **Import meter report**: the owner uploads the prepaid meter's Monthly Consumption Report (.xlsx); each month's main meter readings and bill are filled in. Bill = opening balance + recharge − closing balance (everything the meter deducted), rate = bill ÷ main units; the closing balance carries forward

@@ -27,20 +27,14 @@ def _roommate_is_active(roommate: str, month: str, roommates_df: pd.DataFrame) -
     if row.empty:
         return True  # Default to active if not in registry.
     r = row.iloc[0]
-    if not bool(r.get("is_active", True)):
-        # If a leave_date is set, allow participation up to that month.
-        leave = str(r.get("leave_date") or "").strip()
-        if leave and month <= leave:
-            return True
-        return False
-
     join = str(r.get("join_date") or "").strip()
     leave = str(r.get("leave_date") or "").strip()
     if join and month < join:
         return False
     if leave and month > leave:
         return False
-    return True
+    # Inactive: only up to the month they left.
+    return bool(r.get("is_active", True)) or bool(leave)
 
 
 # One roommate's readings: month -> (month-end reading, start reading).

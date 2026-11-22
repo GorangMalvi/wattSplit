@@ -207,6 +207,7 @@ function RoommatesTable({
                   <input
                     type="checkbox"
                     aria-label={`${rm.name} is active`}
+                    title="Unticking sets Left to their last month with a reading, so past bills stay the same"
                     checked={rm.is_active}
                     disabled={loading || readOnly}
                     onChange={(e) => save(rm, { is_active: e.target.checked })}

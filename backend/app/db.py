@@ -356,20 +356,57 @@ def unlink_roommate(hid: UUID, rid: int) -> bool:
     ) > 0
 
 
+def saved_leave_month(before: Dict[str, Any], is_active: bool, leave: str, read_months: List[str]) -> str:
+    """
+    The Left month to save, so that changing Active doesn't rewrite past bills.
+
+    Turning someone inactive without a Left month (or clearing it while they're
+    inactive) sets it to the last month they were billed for. Turning them
+    active again clears it, unless readings after it would then get billed.
+    ``read_months``: the months they have a month-end reading for.
+    """
+    was_active, old_leave = bool(before["is_active"]), before["leave_date"] or ""
+    if not is_active and not leave and (was_active or old_leave):
+        join = before["join_date"] or ""
+        billed = [m for m in read_months if m >= join and (not old_leave or m <= old_leave)]
+        return max(billed, default="")
+    if is_active and not was_active and leave and leave == old_leave:
+        if not any(m > leave for m in read_months):
+            return ""
+    return leave
+
+
 def update_roommate(hid: UUID, rid: int, **kwargs) -> Optional[Dict[str, Any]]:
     allowed = {"name", "join_date", "leave_date", "is_active"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return get_roommate(hid, rid)
     try:
-        return _fetch_one(
-            f"""
-            UPDATE roommates SET {_set_clause(updates)}
-            WHERE household_id = %s AND id = %s
-            RETURNING {_ROOMMATE_FIELDS}
-            """,
-            (*updates.values(), hid, rid),
-        )
+        with _pool.connection() as conn, conn.transaction():
+            before = conn.execute(
+                f"{_ROOMMATE_SELECT} WHERE household_id = %s AND id = %s FOR NO KEY UPDATE", (hid, rid)
+            ).fetchone()
+            if before is None:
+                return None
+            read = conn.execute(
+                """
+                SELECT month FROM readings
+                WHERE household_id = %s AND roommate_id = %s AND current_reading IS NOT NULL
+                """,
+                (hid, rid),
+            ).fetchall()
+            after = {**before, **updates}
+            updates["leave_date"] = saved_leave_month(
+                before, after["is_active"], after["leave_date"] or "", [r["month"] for r in read]
+            )
+            return conn.execute(
+                f"""
+                UPDATE roommates SET {_set_clause(updates)}
+                WHERE household_id = %s AND id = %s
+                RETURNING {_ROOMMATE_FIELDS}
+                """,
+                (*updates.values(), hid, rid),
+            ).fetchone()
     except errors.UniqueViolation as exc:
         raise _roommate_conflict(exc, updates.get("name"))
 

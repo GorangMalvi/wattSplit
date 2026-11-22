@@ -44,10 +44,9 @@ import MyDashboard, { LinkRoommateCard } from './components/MyDashboard';
 function isActiveIn(roommate, month) {
   const join = roommate.join_date || '';
   const leave = roommate.leave_date || '';
-  if (!roommate.is_active) return Boolean(leave) && month <= leave;
   if (join && month < join) return false;
   if (leave && month > leave) return false;
-  return true;
+  return roommate.is_active || Boolean(leave);
 }
 
 // Last tab the user had open, so a page refresh returns to it.
