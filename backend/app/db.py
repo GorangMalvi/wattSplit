@@ -543,6 +543,21 @@ def previous_readings(hid: UUID, month: str) -> List[Dict[str, Any]]:
     )
 
 
+def roommate_readings(hid: UUID, roommate_id: int) -> Dict[str, tuple]:
+    """Every month of the household -> the roommate's (month-end, start) reading, None where missing."""
+    rows = _fetch(
+        """
+        SELECT m.month, r.current_reading, r.start_reading
+        FROM months m
+        LEFT JOIN readings r
+          ON r.household_id = m.household_id AND r.month = m.month AND r.roommate_id = %s
+        WHERE m.household_id = %s
+        """,
+        (roommate_id, hid),
+    )
+    return {r["month"]: (r["current_reading"], r["start_reading"]) for r in rows}
+
+
 def set_reading(hid: UUID, month: str, roommate_id: int, **fields: Optional[float]) -> None:
     """
     Set ``current_reading`` and/or ``start_reading`` (only the ones given; None
@@ -717,6 +732,17 @@ class HouseholdData:
 
     def get_readings(self, month: str) -> pd.DataFrame:
         return self.readings[self.readings["month"] == month]
+
+    def readings_by_roommate(self) -> Dict[str, Dict[str, tuple]]:
+        """Roommate name -> month -> (month-end, start) reading, None where missing."""
+        found: Dict[str, Dict[str, tuple]] = {}
+        df = self.readings
+        for month, name, current, start in zip(df["month"], df["roommate"], df["current_reading"], df["start_reading"]):
+            found.setdefault(str(name), {})[str(month)] = (
+                float(current) if pd.notna(current) else None,
+                float(start) if pd.notna(start) else None,
+            )
+        return found
 
     def get_reading(self, month: str, roommate: str) -> Optional[float]:
         rows = self.readings[(self.readings["month"] == month) & (self.readings["roommate"] == roommate)]

@@ -418,10 +418,25 @@ def list_months(hid: HouseholdId):
 
 @app.get("/api/months/{month}", response_model=MonthDetail)
 def get_month(month: MonthParam, hid: HouseholdId):
-    row = db.get_month(hid, month)
+    months = db.list_months(hid)
+    row = next((m for m in months if m["month"] == month), None)
     if row is None:
         raise HTTPException(status_code=404, detail="Month not found")
-    return {**row, "readings": db.list_readings(hid, month), "previous_readings": db.previous_readings(hid, month)}
+    readings = db.list_readings(hid)
+    by_roommate: dict = {}
+    for r in readings:
+        by_roommate.setdefault(r["roommate_id"], {})[r["month"]] = (r["current_reading"], r["start_reading"])
+    fallbacks = []
+    for rid, history in by_roommate.items():
+        last_known = calc.reading_starts([m["month"] for m in months], history)[month].fallback
+        if last_known is not None:
+            fallbacks.append({"roommate_id": rid, "current_reading": last_known})
+    return {
+        **row,
+        "readings": [r for r in readings if r["month"] == month],
+        "previous_readings": db.previous_readings(hid, month),
+        "fallback_readings": fallbacks,
+    }
 
 
 @app.post("/api/months", response_model=MonthOut, status_code=201)
@@ -491,12 +506,22 @@ async def import_meter_report(request: Request, hid: OwnedHouseholdId, dry_run: 
 # ---------------------------------------------------------------------------
 # Readings
 # ---------------------------------------------------------------------------
+def _require_forward_meter(history: calc.Readings, month: str, changed: tuple) -> None:
+    error = calc.reading_error(history, history, {**history, month: changed}, month)
+    if error:
+        raise HTTPException(status_code=422, detail=error)
+
+
 @app.put("/api/readings/{month}/{roommate_id}")
 def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, member: CurrentMember):
-    if db.get_month(member.hid, month) is None:
+    history = db.roommate_readings(member.hid, roommate_id)
+    if month not in history:
         raise HTTPException(status_code=404, detail="Month not found")
     _require_editable_roommate(member, roommate_id)
     fields = payload.model_dump(include=payload.model_fields_set)
+    current, start = history[month]
+    changed = (fields.get("current_reading", current), fields.get("start_reading", start))
+    _require_forward_meter(history, month, changed)
     db.set_reading(member.hid, month, roommate_id, **fields)
     return {"month": month, "roommate_id": roommate_id, **fields}
 
@@ -504,6 +529,9 @@ def update_reading(month: MonthParam, roommate_id: int, payload: ReadingUpdate, 
 @app.delete("/api/readings/{month}/{roommate_id}", status_code=204)
 def delete_reading(month: MonthParam, roommate_id: int, member: CurrentMember):
     _require_editable_roommate(member, roommate_id)
+    history = db.roommate_readings(member.hid, roommate_id)
+    if month in history:
+        _require_forward_meter(history, month, (None, None))
     if not db.delete_reading(member.hid, month, roommate_id):
         raise HTTPException(status_code=404, detail="No reading for that month")
     return None

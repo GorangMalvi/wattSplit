@@ -3,8 +3,9 @@ import { useState } from 'react';
 const fmt = (v) => (v === null || v === undefined ? '-' : v.toLocaleString(undefined, { maximumFractionDigits: 2 }));
 
 // rows: { roommate_id, name, previous_reading, previous_editable, start_reading,
-//         current_reading, sub_units }. previous_editable: no reading last month,
-// so the start reading can be typed in (saved as start_reading).
+//         fallback_reading, current_reading, sub_units }. previous_editable: no
+// reading last month, so the start reading can be typed in (saved as
+// start_reading); left blank, units count from fallback_reading (last known).
 // onUpdate(roommateId, { current_reading } | { start_reading }); null clears.
 // canEdit(roommateId): whether this user may change that roommate's readings.
 // mainUnits: the main meter's units this month, for the total row (optional).
@@ -75,10 +76,23 @@ function ReadingsTable({ rows, onUpdate, loading, canEdit = () => true, mainUnit
                   {row.previous_editable && editable ? (
                     <div className="flex flex-col items-end gap-1">
                       {input(row, 'start_reading', 'Start')}
-                      <span className="text-xs text-slate-400">No reading last month</span>
+                      <span className="text-xs text-slate-400">
+                        No reading last month
+                        {row.start_reading === null &&
+                          row.fallback_reading !== null &&
+                          `, counting from ${fmt(row.fallback_reading)}`}
+                      </span>
                     </div>
                   ) : (
-                    <span title={row.previous_editable ? 'Start reading' : "Last month's reading"}>
+                    <span
+                      title={
+                        !row.previous_editable
+                          ? "Last month's reading"
+                          : row.start_reading === null
+                            ? 'Last known reading'
+                            : 'Start reading'
+                      }
+                    >
                       {fmt(row.previous_reading)}
                     </span>
                   )}

@@ -142,6 +142,8 @@ class MonthDetail(MonthOut):
     readings: List[ReadingOut] = []
     # Last month's month-end readings: where this month starts for each roommate.
     previous_readings: List[PreviousReading] = []
+    # The last known reading before this month: its start when there's neither of the above.
+    fallback_readings: List[PreviousReading] = []
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +319,7 @@ class DashboardMonth(BaseModel):
     previous_reading: Optional[float]
     previous_editable: bool = Field(..., description="No reading last month: start_reading can be set")
     start_reading: Optional[float]
+    fallback_reading: Optional[float] = Field(None, description="Last known reading, used without a start_reading")
     current_reading: Optional[float]
     sub_units: Optional[float]
     is_active: bool

@@ -3,8 +3,8 @@ Bill-splitting logic per the spec formula.
 """
 from __future__ import annotations
 
-from calendar import monthrange
-from typing import Any, Dict, List, Optional, Tuple
+from calendar import month_name, monthrange
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 
@@ -43,6 +43,70 @@ def _roommate_is_active(roommate: str, month: str, roommates_df: pd.DataFrame) -
     return True
 
 
+# One roommate's readings: month -> (month-end reading, start reading).
+Readings = Dict[str, Tuple[Optional[float], Optional[float]]]
+
+
+class MonthStart(NamedTuple):
+    previous: Optional[float]  # where the month's units are counted from
+    editable: bool             # no reading last month, so a start reading applies
+    fallback: Optional[float]  # the last known reading, used without a start reading
+
+
+def reading_starts(months: Iterable[str], readings: Readings) -> Dict[str, MonthStart]:
+    """
+    Where each month starts for one roommate: last month's reading, else the
+    start reading entered for the month, else the last known reading (so a
+    skipped month's units are billed with the next reading).
+    """
+    starts: Dict[str, MonthStart] = {}
+    last_month = last_known = None
+    for m in sorted(months):
+        current, start = readings.get(m, (None, None))
+        if last_month is not None:
+            previous = last_month
+        elif start is not None:
+            previous = start
+        else:
+            previous = last_known
+        starts[m] = MonthStart(previous, last_month is None, last_known)
+        last_month = current
+        last_known = current if current is not None else previous
+    return starts
+
+
+def reading_error(months: Iterable[str], before: Readings, after: Readings, month: str) -> Optional[str]:
+    """
+    Why changing ``month`` from ``before`` to ``after`` can't be saved, if it
+    can't: the meter would run backwards in that month, or in a later one that
+    was fine until now. Months that were already backwards don't block the
+    change, so old mistakes can be corrected one month at a time.
+    """
+    months = sorted(months)
+
+    def backwards(readings: Readings) -> Dict[str, Tuple[float, float]]:
+        found = {}
+        for m, start in reading_starts(months, readings).items():
+            current = readings.get(m, (None, None))[0]
+            if current is not None and start.previous is not None and current < start.previous:
+                found[m] = (current, start.previous)
+        return found
+
+    was = backwards(before)
+    for m, (current, previous) in backwards(after).items():
+        if m != month and m in was:
+            continue
+        end, start, name = _plain(current), _plain(previous), f"{month_name[int(m[5:7])]} {m[:4]}"
+        if m == month:
+            return f"The {name} reading ({end}) can't be lower than where it starts ({start}). Check the meter."
+        return f"That would put the {name} reading ({end}) below where it starts ({start}). Check both readings."
+    return None
+
+
+def _plain(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
 def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Split ``month``'s bill between the roommates active that month.
@@ -67,13 +131,8 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
 
     roommates_df = data.get_roommates()
 
-    prev_month = data.get_previous_month(month)
-    prev_readings: Dict[str, float] = {}
-    if prev_month:
-        prev_df = data.get_readings(prev_month)
-        for _, r in prev_df.iterrows():
-            if pd.notna(r["current_reading"]):
-                prev_readings[str(r["roommate"])] = float(r["current_reading"])
+    known_months = data.get_months()["month"].astype(str).tolist()
+    history = data.readings_by_roommate()
 
     # Active roommates = those with a current reading and still active this month.
     active_rows = []
@@ -83,11 +142,8 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
             continue
         if not _roommate_is_active(name, month, roommates_df):
             continue
-        # Start of the month: last month's reading, else the start reading entered.
-        start = r.get("start_reading")
-        if name not in prev_readings and start is not None and pd.notna(start):
-            prev_readings[name] = float(start)
-        active_rows.append((name, float(r["current_reading"])))
+        start = reading_starts(known_months, history[str(r["roommate"])])[month]
+        active_rows.append((name, float(r["current_reading"]), start.previous))
 
     active_count = len(active_rows)
     if active_count == 0:
@@ -95,8 +151,7 @@ def _split_month(month: str, data: HouseholdData) -> Tuple[Dict[str, Any], List[
 
     sum_sub_units = 0.0
     split_rows: List[Dict[str, Any]] = []
-    for name, current in active_rows:
-        previous = prev_readings.get(name)
+    for name, current, previous in active_rows:
         if previous is None:
             # No prior or start reading => treat the whole current reading as
             # consumption (a first month entered without a start reading).
@@ -350,12 +405,13 @@ def personal_dashboard(roommate: str, data: HouseholdData) -> Dict[str, Any]:
     recharges_df = data.get_recharges()
     mine = recharges_df[recharges_df["roommate"] == roommate]
 
+    starts = reading_starts(
+        data.get_months()["month"].astype(str).tolist(), data.readings_by_roommate().get(roommate, {})
+    )
     months = []
     for m in sorted(data.get_months()["month"].dropna().astype(str).tolist()):
-        prev_month = data.get_previous_month(m)
-        carried = data.get_reading(prev_month, roommate) if prev_month else None
+        previous, editable, fallback = starts[m]
         start = data.get_start_reading(m, roommate)
-        previous = carried if carried is not None else start
         current = data.get_reading(m, roommate)
         this_month = mine[mine["date"].astype(str).str.startswith(m)]
         is_dg = this_month["meter"] == "dg"
@@ -366,7 +422,8 @@ def personal_dashboard(roommate: str, data: HouseholdData) -> Dict[str, Any]:
             "month": m,
             "previous_reading": previous,
             # No reading last month: the start reading can be entered for this month.
-            "previous_editable": carried is None,
+            "previous_editable": editable,
+            "fallback_reading": fallback,
             "start_reading": start,
             "current_reading": current,
             "sub_units": None if current is None else (current if previous is None else current - previous),

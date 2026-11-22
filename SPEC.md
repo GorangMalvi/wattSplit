@@ -32,7 +32,9 @@ main_reading_start  = previous month main_reading_end OR user input
 main_units          = main_reading_end - main_reading_start
 
 for each active roommate:
-  sub_units_i       = current_reading_i - previous_reading_i
+  previous_reading_i = last month's reading, else this month's start reading,
+                       else the last known reading (a skipped month)
+  sub_units_i       = current_reading_i - previous_reading_i   # readings that make this negative are rejected
 common_units        = main_units - sum(sub_units_i)
 common_share        = common_units / count(active_roommates)
 total_units_i       = sub_units_i + common_share

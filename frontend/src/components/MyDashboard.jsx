@@ -125,7 +125,8 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
   const askStart = Boolean(selected?.previous_editable);
   const reading = parseReading(value);
   const startReading = askStart ? parseReading(startValue) : null;
-  const previous = askStart ? startReading : selected?.previous_reading;
+  const fallback = selected?.fallback_reading ?? null; // last known reading, used without a start
+  const previous = askStart ? (startReading ?? fallback) : selected?.previous_reading;
   const units = reading === null ? null : previous == null ? reading : reading - previous;
 
   // Only what changed: the month-end reading and/or the start reading (blank clears it).
@@ -206,6 +207,11 @@ function ReadingForm({ months, month, onMonthChange: setMonth, roommateId, onSav
         {askStart ? (
           previous == null ? (
             <>No reading last month: enter your meter at the start of this month.</>
+          ) : startReading === null ? (
+            <>
+              No reading last month, so counting from your last known reading:{' '}
+              <span className="font-medium">{formatNumber(previous)}</span>
+            </>
           ) : (
             <>
               Start of month: <span className="font-medium">{formatNumber(previous)}</span>

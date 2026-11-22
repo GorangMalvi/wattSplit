@@ -77,6 +77,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [readingError, setReadingError] = useState(null); // shown by the readings, far below the top alert
   const [showNewMonth, setShowNewMonth] = useState(false);
   const [showImport, setShowImport] = useState(false);
   // Signed-in user's role and linked roommate; 'mine' = personal dashboard.
@@ -126,6 +127,7 @@ function App() {
     if (!month) return;
     if (!quiet) setLoading(true);
     setError(null);
+    setReadingError(null);
     try {
       const [monthRes, calcRes, rechargesRes, historyRes] = await Promise.all([
         getMonth(month),
@@ -227,11 +229,12 @@ function App() {
   const handleReadingUpdate = async (roommateId, fields) => {
     if (!selectedMonth) return;
     setSaving(true);
+    setReadingError(null);
     try {
       await updateReading(selectedMonth, roommateId, fields);
       await loadMonthData(selectedMonth);
     } catch (err) {
-      setError(err.message);
+      setReadingError(err.message);
     } finally {
       setSaving(false);
     }
@@ -403,16 +406,21 @@ function App() {
     const splitById = Object.fromEntries(splitRows.map((r) => [r.roommate_id, r]));
     const readingById = Object.fromEntries((monthData?.readings || []).map((r) => [r.roommate_id, r]));
     // Last month's month-end reading is this month's start; without one the
-    // start reading entered for this month is used (same rule as the backend).
+    // start reading entered for this month is used, else the last known reading
+    // (same rule as calc.reading_starts on the backend).
     const carriedById = Object.fromEntries(
       (monthData?.previous_readings || []).map((r) => [r.roommate_id, r.current_reading])
+    );
+    const fallbackById = Object.fromEntries(
+      (monthData?.fallback_readings || []).map((r) => [r.roommate_id, r.current_reading])
     );
     return roommates
       .filter((rm) => readingById[rm.id] !== undefined || isActiveIn(rm, selectedMonth))
       .map((rm) => {
         const carried = carriedById[rm.id];
         const start = readingById[rm.id]?.start_reading ?? null;
-        const previous = carried ?? start;
+        const fallback = fallbackById[rm.id] ?? null;
+        const previous = carried ?? start ?? fallback;
         const current = readingById[rm.id]?.current_reading ?? null;
         return {
           roommate_id: rm.id,
@@ -420,6 +428,7 @@ function App() {
           previous_reading: previous,
           previous_editable: carried === undefined,
           start_reading: start,
+          fallback_reading: fallback,
           current_reading: current,
           sub_units:
             splitById[rm.id]?.sub_units ??
@@ -703,6 +712,11 @@ function App() {
                 {/* Readings */}
                 <div className="card">
                   <h2 className="mb-4 text-lg font-semibold text-slate-900">Meter Readings</h2>
+                  {readingError && (
+                    <div className="mb-3">
+                      <ErrorAlert message={readingError} />
+                    </div>
+                  )}
                   {loading ? (
                     <LoadingSpinner />
                   ) : (
