@@ -272,6 +272,8 @@ def invite_roommate(roommate_id: int, payload: InviteCreate, request: Request, m
         raise HTTPException(status_code=404, detail="Roommate not found")
     if roommate["linked"]:
         raise HTTPException(status_code=409, detail=f"{roommate['name']} has already joined")
+    if payload.email.strip().lower() == (db.user_email(member.user_id) or "").strip().lower():
+        raise HTTPException(status_code=422, detail="That's your own email. Invite the roommate on theirs.")
     invite = db.create_invite(member.hid, roommate_id, payload.email, member.user_id)
     out = _invite_out(invite, _app_url(request))
     error = _send_invite_email({**invite, "link": out["link"]})
@@ -368,15 +370,12 @@ def me(member: CurrentMember):
 
 @app.post("/api/me/roommate", response_model=MeOut)
 def link_my_roommate(payload: LinkRoommate, member: CurrentMember):
-    """Say which roommate you are: pick an unlinked one or add yourself by name."""
+    """Say which roommate you are: add yourself by name, or (owner) pick an existing one."""
     if member.roommate_id is not None:
         raise HTTPException(status_code=409, detail=db.ALREADY_LINKED)
     try:
         if payload.roommate_id is not None:
-            _require_roommate(member.hid, payload.roommate_id)
-            roommate = db.link_roommate(member.hid, payload.roommate_id, member.user_id)
-            if roommate is None:
-                raise HTTPException(status_code=409, detail="Someone else is already linked to that roommate")
+            roommate = db.link_roommate(member.hid, payload.roommate_id, member.user_id, member.is_owner)
         else:
             roommate = db.add_roommate(
                 member.hid,
@@ -384,6 +383,8 @@ def link_my_roommate(payload: LinkRoommate, member: CurrentMember):
                 join_date=date.today().strftime("%Y-%m"),
                 user_id=member.user_id,
             )
+    except db.LinkError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"role": member.role, "roommate": roommate, "voice_enabled": voice.enabled()}

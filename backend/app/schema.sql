@@ -134,6 +134,45 @@ create table if not exists public.settlements (
 
 create index if not exists settlements_household_idx on public.settlements (household_id, date);
 
+-- Every login each roommate has had, kept after unlinking: nobody can confirm
+-- a payment from a roommate they've been, or take over someone else's name.
+create table if not exists public.roommate_logins (
+    household_id uuid not null,
+    roommate_id  bigint not null,
+    user_id      uuid not null, -- no foreign key: the history outlives the login
+    primary key (roommate_id, user_id),
+    foreign key (household_id, roommate_id) references public.roommates (household_id, id) on delete cascade
+);
+
+create index if not exists roommate_logins_household_idx on public.roommate_logins (household_id);
+
+create or replace function public.record_roommate_login()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+    if new.user_id is not null then
+        insert into public.roommate_logins (household_id, roommate_id, user_id)
+        values (new.household_id, new.id, new.user_id)
+        on conflict do nothing;
+    end if;
+    return null;
+end;
+$$;
+
+revoke all on function public.record_roommate_login() from public, anon, authenticated;
+
+drop trigger if exists roommates_record_login on public.roommates;
+create trigger roommates_record_login
+    after insert or update of user_id on public.roommates
+    for each row execute function public.record_roommate_login();
+
+insert into public.roommate_logins (household_id, roommate_id, user_id)
+select household_id, id, user_id from public.roommates where user_id is not null
+on conflict do nothing;
+
 -- ---------------------------------------------------------------------------
 -- Row Level Security
 --
@@ -143,6 +182,8 @@ create index if not exists settlements_household_idx on public.settlements (hous
 --
 -- Members read everything in their household. The owner changes anything;
 -- other members change only readings and payments of their own roommate.
+-- Who is which roommate, and settle-up payments, only the backend writes:
+-- otherwise "received" could be faked through the REST API.
 -- ---------------------------------------------------------------------------
 create or replace function public.is_household_member(hid uuid)
 returns boolean
@@ -191,6 +232,7 @@ alter table public.readings          enable row level security;
 alter table public.recharges         enable row level security;
 alter table public.invites           enable row level security;
 alter table public.settlements       enable row level security;
+alter table public.roommate_logins   enable row level security;
 
 -- Invite codes are secrets: only the owner can see them over the REST API,
 -- and only the backend writes them.
@@ -216,11 +258,9 @@ drop policy if exists "members read roommates" on public.roommates;
 create policy "members read roommates" on public.roommates
     for select to authenticated using (public.is_household_member(household_id));
 
+-- Earlier versions let the owner write roommates over REST, including whose
+-- login a roommate is (and deleting one deletes their settlements).
 drop policy if exists "owner manages roommates" on public.roommates;
-create policy "owner manages roommates" on public.roommates
-    for all to authenticated
-    using (public.is_household_owner(household_id))
-    with check (public.is_household_owner(household_id));
 
 drop policy if exists "members read months" on public.months;
 create policy "members read months" on public.months
@@ -256,13 +296,8 @@ drop policy if exists "members read settlements" on public.settlements;
 create policy "members read settlements" on public.settlements
     for select to authenticated using (public.is_household_member(household_id));
 
--- The owner, or either of the two roommates involved.
+-- Earlier versions let the owner and both roommates involved write these.
 drop policy if exists "owner or party manages settlements" on public.settlements;
-create policy "owner or party manages settlements" on public.settlements
-    for all to authenticated
-    using (public.is_household_owner(household_id)
-           or public.is_own_roommate(household_id, from_roommate_id)
-           or public.is_own_roommate(household_id, to_roommate_id))
-    with check (public.is_household_owner(household_id)
-                or public.is_own_roommate(household_id, from_roommate_id)
-                or public.is_own_roommate(household_id, to_roommate_id));
+
+revoke all on public.roommates, public.settlements, public.roommate_logins from anon, authenticated;
+grant select on public.roommates, public.settlements to authenticated;

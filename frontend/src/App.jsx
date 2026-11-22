@@ -503,6 +503,7 @@ function App() {
             <MyDashboard
               key={me.roommate.id}
               active={view === 'mine'}
+              isOwner={isOwner}
               roommates={roommates}
               onLinkChange={handleLinkChange}
               voiceEnabled={Boolean(me.voice_enabled)}
@@ -514,7 +515,7 @@ function App() {
           !me ? (
             <LoadingSpinner />
           ) : me.roommate ? null : (
-            <LinkRoommateCard roommates={roommates} onLinked={handleLinkChange} />
+            <LinkRoommateCard roommates={roommates} isOwner={isOwner} onLinked={handleLinkChange} />
           )
         ) : (
           <>

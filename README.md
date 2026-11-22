@@ -133,7 +133,7 @@ Invite links and emails to flatmates need a public web address and a verified se
 - Sub-meter readings carry forward: last month's reading is this month's start. For a first month (no reading last month) enter a **start reading**, so only the units used that month are billed. After a skipped month, units count from the last known reading unless a start reading is entered. A reading that would make a meter run backwards is rejected, and so is a first month-end reading without a start reading (a start of 0 has to be confirmed as a brand-new meter)
 - Enter per-room meter readings and recharges/payments; each payment is for the **Main** meter or the **DG**, and balances are tracked per meter (energy charge vs main payments, DG share vs DG payments)
 - Auto-calculate the split, including common units and DG charges
-- **My dashboard**: each flatmate links their login to their roommate, then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
+- **My dashboard**: each flatmate links their login to their roommate (the owner picks their own name; anyone else joins an existing name with the owner's invite, or adds themselves as a new one), then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
 - Permissions: the household owner edits everything; other members edit only their own readings and payments
 - Balances to date (all bills so far minus all payments)
 - Download a monthly Excel report

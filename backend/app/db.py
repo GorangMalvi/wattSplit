@@ -92,6 +92,16 @@ def _execute(query: str, params: tuple = ()) -> int:
         return conn.execute(query, params).rowcount
 
 
+def lock_household(conn, hid: UUID) -> None:
+    """One change at a time to a household's logins and settlements (released at commit)."""
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (str(hid),))
+
+
+def user_email(user_id: str) -> Optional[str]:
+    row = _fetch_one("SELECT email FROM auth.users WHERE id = %s", (user_id,))
+    return row["email"] if row else None
+
+
 def _set_clause(updates: Dict[str, Any]) -> str:
     # Keys are always filtered through an allow-list before reaching here.
     return ", ".join(f"{k} = %s" for k in updates)
@@ -215,19 +225,59 @@ def add_roommate(hid: UUID, name: str, join_date: str = "", leave_date: str = ""
         raise _roommate_conflict(exc, name)
 
 
-def link_roommate(hid: UUID, rid: int, user_id: str) -> Optional[Dict[str, Any]]:
-    """Link the login to an unlinked roommate; None if it's missing or already taken."""
+class LinkError(ValueError):
+    """A login that can't become that roommate; ``status`` is the HTTP status to answer with."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def link_roommate(hid: UUID, rid: int, user_id: str, is_owner: bool) -> Dict[str, Any]:
+    """
+    Pick yourself from the existing roommates. Only the owner can: anyone else
+    needs the owner's invite (accept_invite). The owner can't take a name
+    someone else has signed in as, or change names once payments are recorded.
+    """
     try:
-        return _fetch_one(
-            f"""
-            UPDATE roommates SET user_id = %s
-            WHERE household_id = %s AND id = %s AND user_id IS NULL
-            RETURNING {_ROOMMATE_FIELDS}
-            """,
-            (user_id, hid, rid),
-        )
+        with _pool.connection() as conn, conn.transaction():
+            lock_household(conn, hid)
+            target = conn.execute(
+                "SELECT name, user_id FROM roommates WHERE household_id = %s AND id = %s", (hid, rid)
+            ).fetchone()
+            if target is None:
+                raise LinkError(404, "Roommate not found")
+            name = target["name"]
+            if target["user_id"] is not None:
+                raise LinkError(409, "Someone else is already linked to that roommate")
+            if not is_owner:
+                raise LinkError(403, f"Ask the household owner to invite you as {name}.")
+            logins = conn.execute(
+                "SELECT roommate_id, user_id FROM roommate_logins WHERE household_id = %s", (hid,)
+            ).fetchall()
+            mine = {r["roommate_id"] for r in logins if str(r["user_id"]) == str(user_id)}
+            if any(r["roommate_id"] == rid and str(r["user_id"]) != str(user_id) for r in logins):
+                raise LinkError(409, f"{name} has had their own login. Invite them to link it again.")
+            if rid not in mine:
+                _check_new_name(conn, hid, rid, name, switching=bool(mine))
+            return conn.execute(
+                f"""
+                UPDATE roommates SET user_id = %s
+                WHERE household_id = %s AND id = %s
+                RETURNING {_ROOMMATE_FIELDS}
+                """,
+                (user_id, hid, rid),
+            ).fetchone()
     except errors.UniqueViolation:
         raise ValueError(ALREADY_LINKED)
+
+
+def _check_new_name(conn, hid: UUID, rid: int, name: str, switching: bool) -> None:
+    """The owner picking a roommate they haven't been before."""
+    if switching and conn.execute(
+        "SELECT 1 FROM settlements WHERE household_id = %s LIMIT 1", (hid,)
+    ).fetchone():
+        raise LinkError(409, f"You can't switch to {name} after payments between roommates have been recorded.")
 
 
 def unlink_user(hid: UUID, user_id: str) -> bool:
@@ -409,7 +459,7 @@ def _mask_email(email: str) -> str:
 
 
 _INVITE_SELECT = """
-    SELECT i.id, i.household_id, i.roommate_id, rm.name AS roommate, i.email, i.code,
+    SELECT i.id, i.household_id, i.roommate_id, rm.name AS roommate, i.email, i.code, i.created_by,
            i.expires_at, i.accepted_at, (i.expires_at <= now()) AS expired,
            h.name AS household, (rm.user_id IS NOT NULL) AS linked
     FROM invites i
@@ -484,6 +534,9 @@ def accept_invite(code: str, user_id: str, email: Optional[str]) -> Dict[str, An
                 403, f"This invite is for {_mask_email(invite['email'])}. Sign in with that email to accept it."
             )
         hid = invite["household_id"]
+        if str(invite["created_by"]) == str(user_id):
+            raise InviteError(403, f"You can't accept your own invite to be {invite['roommate']}.")
+        lock_household(conn, hid)
         conn.execute(
             "INSERT INTO household_members (household_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             (hid, user_id),

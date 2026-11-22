@@ -17,7 +17,7 @@ import SummaryCard from './SummaryCard';
 import VoicePaymentButton, { canRecord } from './VoicePaymentButton';
 
 // First visit: "which roommate are you?"
-function LinkRoommateCard({ roommates, onLinked }) {
+function LinkRoommateCard({ roommates, isOwner = false, onLinked }) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -42,7 +42,13 @@ function LinkRoommateCard({ roommates, onLinked }) {
         reading and payments.
       </p>
       {error && <ErrorAlert message={error} />}
-      {available.length > 0 && (
+      {!isOwner && available.length > 0 && (
+        <p className="mb-5 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+          Already listed ({available.map((r) => r.name).join(', ')})? Ask the household owner to invite you by
+          email, then open the link. Only add yourself below if your name isn&apos;t there.
+        </p>
+      )}
+      {isOwner && available.length > 0 && (
         <div className="mb-5 flex flex-wrap gap-2">
           {available.map((r) => (
             <button
@@ -432,7 +438,7 @@ function UsageChart({ months }) {
 
 // active: the tab is showing. Each time it's shown again the data refreshes in
 // the background (the Household tab may have changed it) without a spinner.
-function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = false }) {
+function MyDashboard({ active = true, isOwner = false, roommates, onLinkChange, voiceEnabled = false }) {
   const [dash, setDash] = useState(null);
   const [error, setError] = useState(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -518,7 +524,10 @@ function MyDashboard({ active = true, roommates, onLinkChange, voiceEnabled = fa
         </div>
         {confirmUnlink ? (
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-slate-600">Unlink your login from {roommate.name}?</span>
+            <span className="text-slate-600">
+              Unlink your login from {roommate.name}?
+              {!isOwner && " You'll need the owner's invite to link again."}
+            </span>
             <button onClick={unlink} disabled={unlinking} className="btn-danger">
               Unlink
             </button>
