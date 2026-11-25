@@ -54,6 +54,16 @@ export const createHousehold = (name) =>
 export const joinHousehold = (inviteCode) =>
   api.post('/households/join', { invite_code: inviteCode }).then((res) => res.data);
 
+// The signed-in account: { email, households: [{ id, name, role, others, blocks }] }.
+export const getAccount = () => api.get('/account').then((res) => res.data);
+
+// Deletes the account (confirm: "DELETE"). See the privacy policy for what stays.
+export const deleteAccount = (confirm) => api.delete('/account', { params: { confirm } });
+
+// Owner: hand the active household over to a roommate who has joined.
+export const makeOwner = (roommateId) =>
+  api.post('/household/owner', { roommate_id: roommateId }).then((res) => res.data);
+
 // Local development sign-in (code 123456, no email): see backend/app/dev_login.py.
 // Only used when import.meta.env.DEV, i.e. never in production builds.
 export const getDevLogin = () => api.get('/dev/login').then((res) => res.data);

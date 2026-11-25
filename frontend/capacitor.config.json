@@ -1,5 +1,8 @@
 {
   "appId": "com.gorangmalvi.wattsplit",
   "appName": "wattSplit",
-  "webDir": "dist"
+  "webDir": "dist",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "auto"
+  }
 }

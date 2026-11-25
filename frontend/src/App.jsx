@@ -21,6 +21,7 @@ import {
   unlinkRoommate,
   getInvites,
   inviteRoommate,
+  makeOwner,
   revokeInvite,
 } from './api';
 import { formatMoney, formatMonth, formatNumber, meterBill } from './format';
@@ -406,6 +407,19 @@ function App({ household, onHouseholdDeleted }) {
     }
   };
 
+  // Owner: hand the household over. Afterwards this login is a member.
+  const handleMakeOwner = async (roommateId) => {
+    setSaving(true);
+    try {
+      await makeOwner(roommateId);
+      setMe(await getMe());
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleRevokeInvite = async (inviteId) => {
     try {
       await revokeInvite(inviteId);
@@ -664,6 +678,8 @@ function App({ household, onHouseholdDeleted }) {
                   invites={invites}
                   onInvite={isOwner ? handleInvite : undefined}
                   onRevokeInvite={handleRevokeInvite}
+                  onMakeOwner={isOwner ? handleMakeOwner : undefined}
+                  myRoommateId={myRoommateId}
                   readOnly={!isOwner}
                   loading={saving}
                 />
@@ -871,6 +887,8 @@ function App({ household, onHouseholdDeleted }) {
                     invites={invites}
                     onInvite={isOwner ? handleInvite : undefined}
                     onRevokeInvite={handleRevokeInvite}
+                    onMakeOwner={isOwner ? handleMakeOwner : undefined}
+                    myRoommateId={myRoommateId}
                     readOnly={!isOwner}
                     loading={saving}
                   />

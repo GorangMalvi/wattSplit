@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { devLogin, getDevLogin } from '../api';
 import { supabase } from '../supabase';
+import PrivacyLink from './PrivacyLink';
 
 // Supabase allows one code per email every 60 seconds by default.
 const RESEND_SECONDS = 60;
@@ -15,6 +16,7 @@ function AuthScreen({ invite = null }) {
     if (invite?.email) setEmail((current) => current || invite.email);
   }, [invite]);
   const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [cooldown, setCooldown] = useState(0);
@@ -78,9 +80,23 @@ function AuthScreen({ invite = null }) {
     }
   };
 
+  // For accounts that have a password set in Supabase, such as the one for Google Play's reviewers.
+  const signInWithPassword = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (err) throw err;
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (step === 'email') sendCode();
+    else if (step === 'password') signInWithPassword();
     else verifyCode();
   };
 
@@ -97,6 +113,8 @@ function AuthScreen({ invite = null }) {
         <p className="mb-6 text-sm text-slate-500">
           {step === 'email'
             ? 'Sign in or create an account with a code sent to your email.'
+            : step === 'password'
+              ? 'Sign in with your email and password.'
             : devCode
               ? `Dev sign-in for ${email.trim()}: no email is sent.`
               : `Enter the code we sent to ${email.trim()}.`}
@@ -117,7 +135,7 @@ function AuthScreen({ invite = null }) {
         )}
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          {step === 'email' ? (
+          {step !== 'code' ? (
             <div className="flex flex-col gap-1">
               <label htmlFor="auth-email" className="text-xs font-medium text-slate-500">
                 Email
@@ -130,6 +148,21 @@ function AuthScreen({ invite = null }) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
+              {step === 'password' && (
+                <>
+                  <label htmlFor="auth-password" className="mt-3 text-xs font-medium text-slate-500">
+                    Password
+                  </label>
+                  <input
+                    id="auth-password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </>
+              )}
             </div>
           ) : (
             <div className="flex flex-col gap-1">
@@ -154,9 +187,26 @@ function AuthScreen({ invite = null }) {
           {error && <p className="text-sm text-rose-600">{error}</p>}
 
           <button type="submit" disabled={busy} className="btn-primary">
-            {busy ? 'Please wait…' : step === 'email' ? 'Send code' : 'Verify & sign in'}
+            {busy ? 'Please wait…' : step === 'email' ? 'Send code' : step === 'password' ? 'Sign in' : 'Verify & sign in'}
           </button>
         </form>
+
+        {step !== 'code' && !devCode && (
+          <button
+            type="button"
+            onClick={() => {
+              setStep(step === 'password' ? 'email' : 'password');
+              setError(null);
+            }}
+            className="mt-4 px-0 py-0 text-sm font-medium text-indigo-600 hover:underline"
+          >
+            {step === 'password' ? 'Sign in with an email code instead' : 'Have a password? Sign in with it'}
+          </button>
+        )}
+
+        <p className="mt-6 text-xs text-slate-400">
+          <PrivacyLink />
+        </p>
 
         {step === 'code' && !devCode && (
           <div className="mt-4 flex items-center justify-between text-sm">

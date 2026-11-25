@@ -97,6 +97,14 @@ npm run apk
 ```
 The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Copy it to the phone and open it (allow "install unknown apps" for the file manager / browser you open it with).
 
+### Google Play build
+```bash
+# .env: MOBILE_API_URL=https://<your-service>.onrender.com/api
+cd frontend
+npm run aab
+```
+Writes `frontend/android/app/build/outputs/bundle/release/app-release.aab`, signed with the same release key. It's the same app without the GitHub update banner (Play only allows updates through Play). Google's reviewers sign in with **Have a password? Sign in with it**, using an account you create in Supabase (Authentication → Users → Add user, with a password).
+
 ### 3. Develop on a phone or emulator (live reload)
 No push or release needed: the app on the device loads the Vite dev server on this PC, and saved changes show up straight away.
 
@@ -136,6 +144,7 @@ Invite links and emails to flatmates need a public web address and a verified se
 - Enter per-room meter readings and recharges/payments; each payment is for the **Main** meter or the **DG**, and balances are tracked per meter (energy charge vs main payments, DG share vs DG payments)
 - Auto-calculate the split, including common units and DG charges
 - **My dashboard**: each flatmate links their login to their roommate (the owner picks their own name; anyone else joins an existing name with the owner's invite, or adds themselves as a new one), then sees their own units, bills, payments and balance to date, and submits their own meter reading and payments
+- **Account**: delete your account (your sign-in, email and memberships; households only you are in go with it, shared ones keep your name and records). An owner hands a shared household over first with *Make owner*. Privacy policy at `/privacy.html`, deletion help at `/delete-account.html`
 - Permissions: the household owner edits everything except confirming a payment for someone else; other members edit only their own readings and payments
 - **Settle up with verification**: shows who pays whom, up to the last month with a bill and everyone's readings. The payer enters an amount (part payments are fine) and taps *I paid*; it stays **In verification**, reserved but not counted, until the receiver signs in on their own login and marks it received, or not received with a reason. Nobody else can confirm it, the owner included. A receiver without a login confirms after joining with the owner's invite. Undoing a received payment takes both roommates. Both are emailed, and with `SETTLEMENT_REMINDERS=1` (live server only) the receiver is reminded every 3 days, up to 5 times
 - **Delete a month or the household** (owner). Deleting a month keeps payments; the month after carries on from the one before, or keeps the readings it started from when there is none

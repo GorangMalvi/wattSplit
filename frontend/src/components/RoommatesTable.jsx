@@ -70,12 +70,15 @@ function RoommatesTable({
   invites = [],
   onInvite,
   onRevokeInvite,
+  onMakeOwner,
+  myRoommateId,
 }) {
   const [newRoommate, setNewRoommate] = useState({ name: '', join_date: currentMonth(), email: '' });
   const [inviteFor, setInviteFor] = useState(null); // roommate id with the email form open
   const [inviteEmail, setInviteEmail] = useState('');
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState({}); // roommate id -> last invite sent
+  const [ownerFor, setOwnerFor] = useState(null); // roommate id being confirmed as the new owner
   const canInvite = !readOnly && Boolean(onInvite);
   const columns = canInvite ? 5 : 4;
   const pendingFor = (id) => invites.find((i) => i.roommate_id === id);
@@ -120,7 +123,34 @@ function RoommatesTable({
   };
 
   const inviteCell = (rm) => {
-    if (rm.linked) return <span className="text-xs text-emerald-700">Joined</span>;
+    if (rm.linked) {
+      if (!onMakeOwner || rm.id === myRoommateId) return <span className="text-xs text-emerald-700">Joined</span>;
+      return ownerFor === rm.id ? (
+        <span className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-600">Make {rm.name} the owner? You become a member.</span>
+          <button
+            onClick={async () => {
+              setOwnerFor(null);
+              await onMakeOwner(rm.id);
+            }}
+            disabled={loading}
+            className="btn-primary px-2 py-1 text-xs"
+          >
+            Yes, make owner
+          </button>
+          <button onClick={() => setOwnerFor(null)} className="btn-secondary px-2 py-1 text-xs">
+            No
+          </button>
+        </span>
+      ) : (
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-emerald-700">Joined</span>
+          <button onClick={() => setOwnerFor(rm.id)} disabled={loading} className="btn-secondary px-2 py-1 text-xs">
+            Make owner
+          </button>
+        </span>
+      );
+    }
     const pending = pendingFor(rm.id);
     if (!pending) {
       return (

@@ -177,6 +177,92 @@ def delete_household(hid: UUID) -> bool:
     return _execute("DELETE FROM households WHERE id = %s", (hid,)) > 0
 
 
+_ACCOUNT_HOUSEHOLDS = """
+    SELECT h.id, h.name, m.role,
+           (SELECT count(*) FROM household_members o WHERE o.household_id = h.id AND o.user_id <> m.user_id) AS others,
+           (SELECT count(*) FROM household_members o
+            WHERE o.household_id = h.id AND o.user_id <> m.user_id AND o.role = 'owner') AS other_owners
+    FROM household_members m JOIN households h ON h.id = m.household_id
+    WHERE m.user_id = %s
+    ORDER BY h.created_at
+"""
+
+
+class AccountError(ValueError):
+    """The account can't be deleted (yet); ``status`` is the HTTP status to answer with."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def account_households(user_id: str, conn=None) -> List[Dict[str, Any]]:
+    """
+    The user's households. ``blocks``: they own it, others have joined and
+    nobody else owns it, so the account can't be deleted until it's handed over.
+    """
+    rows = conn.execute(_ACCOUNT_HOUSEHOLDS, (user_id,)).fetchall() if conn else _fetch(_ACCOUNT_HOUSEHOLDS, (user_id,))
+    return [{**r, "blocks": r["role"] == "owner" and r["others"] > 0 and r["other_owners"] == 0} for r in rows]
+
+
+def delete_account(user_id: str, email: Optional[str]) -> List[str]:
+    """
+    Delete the login: the households only this user is in (with everything in
+    them), invites sent to their email, their masked email on payments they
+    answered, and the auth user, which takes their memberships with it. In
+    shared households their roommate stays (name, readings, payments), unlinked.
+    Returns the names of the households deleted.
+    """
+    with _pool.connection() as conn, conn.transaction():
+        households = account_households(user_id, conn)
+        for h in sorted(households, key=lambda h: str(h["id"])):
+            lock_household(conn, h["id"])
+        households = account_households(user_id, conn)  # again, under the locks
+        blocked = [h["name"] for h in households if h["blocks"]]
+        if blocked:
+            raise AccountError(409, f"You own {', '.join(blocked)}, which other people have joined. "
+                                    "Make one of them the owner first, or delete the household.")
+        alone = [h for h in households if h["others"] == 0]
+        for h in alone:
+            conn.execute("DELETE FROM households WHERE id = %s", (h["id"],))
+        if email:
+            # Used ones too: once accepted, an invite is only a record of their address.
+            conn.execute("DELETE FROM invites WHERE lower(email) = lower(%s)", (email,))
+        conn.execute(
+            "UPDATE settlements SET responded_by_email = 'a deleted account' WHERE responded_by = %s", (user_id,)
+        )
+        conn.execute("DELETE FROM roommate_logins WHERE user_id = %s", (user_id,))
+        try:
+            with conn.transaction():
+                conn.execute("DELETE FROM auth.users WHERE id = %s", (user_id,))
+        except errors.InsufficientPrivilege as exc:
+            raise AccountError(503, "Deleting accounts isn't switched on yet. Email the developer to have it done.") from exc
+        return [h["name"] for h in alone]
+
+
+def make_owner(hid: UUID, user_id: str, roommate_id: int) -> str:
+    """Hand the household over to the login linked to that roommate; the current owner becomes a member."""
+    with _pool.connection() as conn, conn.transaction():
+        lock_household(conn, hid)
+        target = conn.execute(
+            """
+            SELECT r.name, r.user_id FROM roommates r
+            JOIN household_members m ON m.household_id = r.household_id AND m.user_id = r.user_id
+            WHERE r.household_id = %s AND r.id = %s
+            """,
+            (hid, roommate_id),
+        ).fetchone()
+        if target is None:
+            raise AccountError(409, "Only someone who has joined with their own login can be made the owner.")
+        if str(target["user_id"]) == str(user_id):
+            raise AccountError(409, "You're already the owner.")
+        conn.execute("UPDATE household_members SET role = 'owner' WHERE household_id = %s AND user_id = %s",
+                     (hid, target["user_id"]))
+        conn.execute("UPDATE household_members SET role = 'member' WHERE household_id = %s AND user_id = %s",
+                     (hid, user_id))
+        return target["name"]
+
+
 def get_membership(user_id: str, household_id: UUID) -> Optional[Dict[str, Any]]:
     """
     ``{"role": "owner" | "member", "roommate_id": int | None}`` (the roommate

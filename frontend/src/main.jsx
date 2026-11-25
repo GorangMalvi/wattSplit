@@ -4,9 +4,12 @@ import './index.css'
 import Root from './Root.jsx'
 import UpdateBanner from './components/UpdateBanner.jsx'
 
+// The Google Play build leaves the GitHub update check out entirely (Play only allows Play updates).
+const Banner = import.meta.env.VITE_PLAY_STORE ? () => null : UpdateBanner
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <UpdateBanner />
+    <Banner />
     <Root />
   </StrictMode>,
 )

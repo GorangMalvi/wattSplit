@@ -4,7 +4,8 @@ import { APP_VERSION, LATEST_APK_URL, checkForUpdate } from '../appUpdate';
 
 // Android app only (the website is always the latest): "Update available"
 // when GitHub has a newer release. "Later" hides it until the next launch.
-function UpdateBanner({ enabled = Capacitor.isNativePlatform() }) {
+// Never in the Google Play build: Play only allows updates through Play.
+function UpdateBanner({ enabled = Capacitor.isNativePlatform() && !import.meta.env.VITE_PLAY_STORE }) {
   const [update, setUpdate] = useState(null);
   const [opening, setOpening] = useState(false);
 
