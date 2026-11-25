@@ -31,6 +31,23 @@ class HouseholdOut(BaseModel):
 EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 
 
+class AccountHousehold(BaseModel):
+    id: UUID
+    name: str
+    role: str
+    others: int  # other members
+    blocks: bool  # owned with others in it: hand it over before deleting the account
+
+
+class AccountOut(BaseModel):
+    email: Optional[str]
+    households: List[AccountHousehold]
+
+
+class OwnerChange(BaseModel):
+    roommate_id: int = Field(..., ge=1)
+
+
 class InviteCreate(BaseModel):
     email: str = Field(..., max_length=254, pattern=EMAIL_PATTERN)
 

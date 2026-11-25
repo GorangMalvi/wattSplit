@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import App from './App';
+import AccountPage from './components/AccountPage';
 import { acceptInvite, getHouseholds, lookupInvite, setActiveHousehold } from './api';
 import AuthScreen from './components/AuthScreen';
 import ErrorAlert from './components/ErrorAlert';
@@ -109,6 +110,7 @@ function Root() {
   const [households, setHouseholds] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [addingHousehold, setAddingHousehold] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(null);
   // Invite link: its code, who it's for (shown before sign-in), and the outcome.
@@ -225,6 +227,19 @@ function Root() {
 
   if (households === null) return <LoadingSpinner />;
 
+  if (showAccount) {
+    return (
+      <AccountPage
+        onBack={() => setShowAccount(false)}
+        onDeleted={() => {
+          setShowAccount(false);
+          setNotice({ tone: 'success', text: 'Your account has been deleted.' });
+          signOut();
+        }}
+      />
+    );
+  }
+
   const active = households.find((h) => h.id === activeId);
 
   if (!active || addingHousehold) {
@@ -235,6 +250,7 @@ function Root() {
           onDone={handleHouseholdReady}
           onCancel={active ? () => setAddingHousehold(false) : null}
           onSignOut={signOut}
+          onAccount={() => setShowAccount(true)}
         />
       </>
     );
@@ -276,6 +292,9 @@ function Root() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-500">{session.user.email}</span>
+            <button onClick={() => setShowAccount(true)} className="btn-secondary">
+              Account
+            </button>
             <button onClick={signOut} className="btn-secondary">
               Sign out
             </button>

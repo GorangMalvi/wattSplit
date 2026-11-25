@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { createHousehold, joinHousehold } from '../api';
 
-function HouseholdSetup({ onDone, onCancel, onSignOut }) {
+function HouseholdSetup({ onDone, onCancel, onSignOut, onAccount }) {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -83,6 +83,11 @@ function HouseholdSetup({ onDone, onCancel, onSignOut }) {
           {onCancel && (
             <button onClick={onCancel} className="btn-secondary">
               Back to dashboard
+            </button>
+          )}
+          {onAccount && (
+            <button onClick={onAccount} className="btn-secondary">
+              Account
             </button>
           )}
           <button onClick={onSignOut} className="btn-secondary">

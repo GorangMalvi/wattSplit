@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { devLogin, getDevLogin } from '../api';
 import { supabase } from '../supabase';
+import PrivacyLink from './PrivacyLink';
 
 // Supabase allows one code per email every 60 seconds by default.
 const RESEND_SECONDS = 60;
@@ -202,6 +203,10 @@ function AuthScreen({ invite = null }) {
             {step === 'password' ? 'Sign in with an email code instead' : 'Have a password? Sign in with it'}
           </button>
         )}
+
+        <p className="mt-6 text-xs text-slate-400">
+          <PrivacyLink />
+        </p>
 
         {step === 'code' && !devCode && (
           <div className="mt-4 flex items-center justify-between text-sm">

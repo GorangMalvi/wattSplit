@@ -25,6 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import calc, db, dev_login, export, mailer, meter_report, settlement_mail, settlements, voice
 from .auth import current_claims, current_user_id
 from .models import (
+    AccountOut,
+    OwnerChange,
     Dashboard,
     HouseholdCreate,
     HouseholdJoin,
@@ -196,6 +198,38 @@ def delete_household(hid: OwnedHouseholdId, confirm_name: str = Query(..., descr
     if confirm_name.strip() != household["name"].strip():
         raise HTTPException(status_code=422, detail="Type the household's name exactly to delete it")
     db.delete_household(hid)
+    return None
+
+
+@app.post("/api/household/owner")
+def make_owner(payload: OwnerChange, member: CurrentMember):
+    """Owner: hand the household over to a member; you become a member."""
+    if not member.is_owner:
+        raise HTTPException(status_code=403, detail="Only the household owner can do this")
+    try:
+        return {"owner": db.make_owner(member.hid, member.user_id, payload.roommate_id)}
+    except db.AccountError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# The account itself (not one household)
+# ---------------------------------------------------------------------------
+@app.get("/api/account", response_model=AccountOut)
+def account(claims: Annotated[dict, Depends(current_claims)]):
+    return {"email": claims.get("email"), "households": db.account_households(claims["sub"])}
+
+
+@app.delete("/api/account", status_code=204)
+def delete_account(claims: Annotated[dict, Depends(current_claims)],
+                   confirm: str = Query(..., description="DELETE, typed to confirm")):
+    """Delete the signed-in account (see db.delete_account for what goes and what stays)."""
+    if confirm.strip() != "DELETE":
+        raise HTTPException(status_code=422, detail="Type DELETE to confirm")
+    try:
+        db.delete_account(claims["sub"], claims.get("email"))
+    except db.AccountError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
     return None
 
 
