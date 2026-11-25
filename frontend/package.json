@@ -11,6 +11,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "apk:release": "npm run build:android && cd android && gradlew assembleRelease",
+    "build:play": "vite build --mode play && cap sync android",
+    "aab": "npm run build:play && cd android && gradlew bundleRelease",
     "local": "node scripts/local.mjs",
     "android:dev": "node scripts/android-dev.mjs"
   },

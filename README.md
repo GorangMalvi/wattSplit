@@ -97,6 +97,14 @@ npm run apk
 ```
 The APK is written to `frontend/android/app/build/outputs/apk/debug/app-debug.apk`. Copy it to the phone and open it (allow "install unknown apps" for the file manager / browser you open it with).
 
+### Google Play build
+```bash
+# .env: MOBILE_API_URL=https://<your-service>.onrender.com/api
+cd frontend
+npm run aab
+```
+Writes `frontend/android/app/build/outputs/bundle/release/app-release.aab`, signed with the same release key. It's the same app without the GitHub update banner (Play only allows updates through Play). Google's reviewers sign in with **Have a password? Sign in with it**, using an account you create in Supabase (Authentication → Users → Add user, with a password).
+
 ### 3. Develop on a phone or emulator (live reload)
 No push or release needed: the app on the device loads the Vite dev server on this PC, and saved changes show up straight away.
 

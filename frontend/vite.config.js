@@ -13,8 +13,11 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '..', '')
 
   // The Android app has no /api proxy, so it calls the deployed backend directly.
-  const mobileDefines = {}
-  if (mode === 'android') {
+  // mode 'play' is the Google Play build: the same app without the GitHub update banner.
+  const mobileDefines = {
+    'import.meta.env.VITE_PLAY_STORE': JSON.stringify(mode === 'play'),
+  }
+  if (mode === 'android' || mode === 'play') {
     const apiUrl = (env.MOBILE_API_URL || '').replace(/\/$/, '')
     if (!apiUrl.startsWith('https://')) {
       throw new Error('Set MOBILE_API_URL in .env to the deployed backend, e.g. https://wattsplit-api.onrender.com/api')
